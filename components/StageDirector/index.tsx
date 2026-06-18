@@ -221,40 +221,11 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
     project.shots.every(s => s.keyframes?.find(k => k.type === 'start')?.imageUrl);
 
   /**
-   * 组件加载时，检测并重置卡住的生成状态
-   * 解决关闭系统后重新打开时，状态仍为"generating"导致无法重新生成的问题
+   * 图片生成已由服务端后台任务接管。
+   * 进入页面时保留 generating 状态，避免刷新/切页后把后台任务误标为失败。
    */
   useEffect(() => {
-    const hasStuckGenerating = project.shots.some(shot => {
-      const stuckKeyframes = shot.keyframes?.some(kf => kf.status === 'generating');
-      const stuckVideo = shot.interval?.status === 'generating';
-      const stuckNineGrid = shot.nineGrid?.status === 'generating_panels' || shot.nineGrid?.status === 'generating_image' || (shot.nineGrid?.status as string) === 'generating';
-      return stuckKeyframes || stuckVideo || stuckNineGrid;
-    });
-
-    if (hasStuckGenerating) {
-      console.log('🔧 检测到卡住的生成状态，正在重置...');
-      updateProject((prevProject: ProjectState) => ({
-        ...prevProject,
-        shots: prevProject.shots.map(shot =>
-          applyShotQuality({
-            ...shot,
-            keyframes: shot.keyframes?.map(kf => 
-              kf.status === 'generating'
-                ? { ...kf, status: 'failed' as const }
-                : kf
-            ),
-            interval: shot.interval && shot.interval.status === 'generating'
-              ? { ...shot.interval, status: 'failed' as const }
-              : shot.interval,
-            nineGrid: shot.nineGrid && (shot.nineGrid.status === 'generating_panels' || shot.nineGrid.status === 'generating_image' || (shot.nineGrid.status as string) === 'generating')
-              ? { ...shot.nineGrid, status: 'failed' as const }
-              : shot.nineGrid
-          }, prevProject.scriptData)
-        )
-      }));
-    }
-  }, []); // 进入导演页时执行一次，清理离开页面后遗留的 generating 状态
+  }, []);
 
   /**
    * 上报生成状态给父组件，用于导航锁定

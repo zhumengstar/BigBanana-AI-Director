@@ -3,6 +3,7 @@
   window.__BIGBANANA_ASYNC_IMAGE_TASKS_INSTALLED__ = true;
 
   var TASK_ENDPOINT = '/api/project-store/image-tasks';
+  var STORAGE_KEY = 'bigbanana_async_image_tasks';
   var POLL_DELAY_MS = 2000;
   var originalFetch = window.fetch.bind(window);
 
@@ -12,6 +13,31 @@
     tasks: {}
   };
   window.__BIGBANANA_ASYNC_IMAGE_TASKS__ = state;
+
+  var loadStoredTasks = function () {
+    try {
+      return JSON.parse(window.localStorage.getItem(STORAGE_KEY) || '{}') || {};
+    } catch (error) {
+      return {};
+    }
+  };
+
+  var saveStoredTasks = function () {
+    try {
+      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state.tasks || {}));
+    } catch (error) {
+      // Ignore storage quota/private mode failures. The server-side queue is still authoritative.
+    }
+  };
+
+  state.tasks = loadStoredTasks();
+
+  var rememberTask = function (task) {
+    if (!task || !task.id) return;
+    state.tasks[task.id] = task;
+    state.lastTaskId = task.id;
+    saveStoredTasks();
+  };
 
   var sleep = function (ms) {
     return new Promise(function (resolve) {
@@ -80,8 +106,7 @@
       throw new Error('image task create returned invalid response');
     }
 
-    state.tasks[result.taskId] = result.task;
-    state.lastTaskId = result.taskId;
+    rememberTask(result.task || { id: result.taskId, status: 'queued' });
     state.lastCreatedAt = Date.now();
     return result.taskId;
   };
@@ -98,7 +123,7 @@
 
       var result = await response.json();
       var task = result && result.task;
-      state.tasks[taskId] = task;
+      rememberTask(task || { id: taskId, status: 'unknown' });
 
       if (task && task.status === 'completed') return task;
       if (task && task.status === 'failed') {
@@ -155,6 +180,21 @@
     }), { status: 200, headers: headers });
   };
 
+  var resumeStoredTasks = function () {
+    Object.keys(state.tasks || {}).forEach(function (taskId) {
+      var task = state.tasks[taskId];
+      if (!task || task.status === 'completed' || task.status === 'failed') return;
+      pollTask(taskId, null).catch(function (error) {
+        state.tasks[taskId] = Object.assign({}, task, {
+          id: taskId,
+          status: 'poll_error',
+          pollError: error && error.message ? error.message : String(error)
+        });
+        saveStoredTasks();
+      });
+    });
+  };
+
   window.fetch = async function (input, init) {
     var request = input instanceof Request ? input : new Request(input, init);
     var method = (request.method || 'GET').toUpperCase();
@@ -177,4 +217,6 @@
     var task = await pollTask(taskId, null);
     return responseFromTask(task, responseFormat);
   };
+
+  resumeStoredTasks();
 })();

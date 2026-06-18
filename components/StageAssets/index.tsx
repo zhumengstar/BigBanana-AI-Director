@@ -183,59 +183,11 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
   const shotPromptModel = project.shotGenerationModel || project.scriptData?.shotGenerationModel || DEFAULTS.modelVersion;
 
   /**
-   * 组件加载时，检测并重置卡住的生成状态
-   * 解决关闭页面后重新打开时，状态仍为"generating"导致无法重新生成的问题
+   * 图片生成已由服务端后台任务接管。
+   * 进入页面时保留 generating 状态，避免刷新/切页后把后台任务误标为失败。
    */
   useEffect(() => {
-    if (!project.scriptData) return;
-
-    const hasStuckCharacters = project.scriptData.characters.some(char => {
-      // 检查角色本身是否卡住
-      const isCharStuck = char.status === 'generating' && !char.referenceImage;
-      // 检查角色变体是否卡住
-      const hasStuckVariations = char.variations?.some(v => v.status === 'generating' && !v.referenceImage);
-      return isCharStuck || hasStuckVariations;
-    });
-
-    const hasStuckScenes = project.scriptData.scenes.some(scene => 
-      scene.status === 'generating' && !scene.referenceImage
-    );
-
-    const hasStuckProps = (project.scriptData.props || []).some(prop =>
-      prop.status === 'generating' && !prop.referenceImage
-    );
-
-    if (hasStuckCharacters || hasStuckScenes || hasStuckProps) {
-      console.log('🔧 检测到卡住的生成状态，正在重置...');
-      const newData = cloneScriptData(project.scriptData);
-      
-      // 重置角色状态
-      newData.characters = newData.characters.map(char => ({
-        ...char,
-        status: char.status === 'generating' ? 'failed' as const : char.status,
-        variations: char.variations?.map(v => ({
-          ...v,
-          status: v.status === 'generating' ? 'failed' as const : v.status
-        }))
-      }));
-      
-      // 重置场景状态
-      newData.scenes = newData.scenes.map(scene => ({
-        ...scene,
-        status: scene.status === 'generating' ? 'failed' as const : scene.status
-      }));
-
-      // 重置道具状态
-      if (newData.props) {
-        newData.props = newData.props.map(prop => ({
-          ...prop,
-          status: prop.status === 'generating' ? 'failed' as const : prop.status
-        }));
-      }
-      
-      updateProject({ scriptData: newData });
-    }
-  }, []); // 进入资产页时执行一次，清理离开页面后遗留的 generating 状态
+  }, []);
 
   /**
    * 上报生成状态给父组件，用于导航锁定
