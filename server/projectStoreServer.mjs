@@ -326,6 +326,25 @@ const extractImageFromProviderResponse = async (json) => {
     };
   }
 
+  const choices = Array.isArray(json?.choices) ? json.choices : [];
+  for (const choice of choices) {
+    const images = Array.isArray(choice?.message?.images) ? choice.message.images : [];
+    for (const image of images) {
+      const url = image?.image_url?.url || image?.url;
+      if (typeof url !== 'string' || !url.trim()) continue;
+      if (url.startsWith('data:')) {
+        return {
+          dataUrl: url,
+          responseFormat: 'openai-chat-image',
+        };
+      }
+      return {
+        remoteUrl: url,
+        responseFormat: 'openai-chat-image',
+      };
+    }
+  }
+
   const outputItems = Array.isArray(json?.output) ? json.output : [];
   for (const item of outputItems) {
     const contentItems = Array.isArray(item?.content) ? item.content : [];

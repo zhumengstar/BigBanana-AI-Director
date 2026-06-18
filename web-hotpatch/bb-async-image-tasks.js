@@ -108,7 +108,8 @@
         registry = JSON.parse(window.localStorage.getItem('bigbanana_model_registry') || '{}');
       }
       var activeImageId = registry && registry.activeModels && registry.activeModels.image;
-      var models = registry && registry.models && registry.models.image;
+      var models = registry && registry.models;
+      if (models && !Array.isArray(models)) models = models.image;
       if (activeImageId && Array.isArray(models)) {
         return models.find(function (model) {
           return model && model.id === activeImageId;
@@ -137,6 +138,21 @@
     return JSON.stringify(output);
   };
 
+  var buildGeminiChatImageBody = function (bodyText) {
+    var originalBody = parseJson(bodyText);
+    var activeModel = getActiveImageModel() || {};
+    var prompt = extractPromptFromGeminiBody(bodyText) || originalBody.prompt || '';
+    return JSON.stringify({
+      model: activeModel.apiModel || originalBody.model || 'gemini-3.1-flash-image',
+      messages: [{ role: 'user', content: prompt }]
+    });
+  };
+
+  var isGeminiFlashImageModel = function (model) {
+    var apiModel = String((model && (model.apiModel || model.model || model.id)) || '').toLowerCase();
+    return apiModel === 'gemini-3.1-flash-image';
+  };
+
   var isImageGenerationRequest = function (url, method, bodyText) {
     if (method !== 'POST') return null;
     if (url.indexOf(TASK_ENDPOINT) >= 0) return null;
@@ -152,6 +168,17 @@
     var bodyLower = String(bodyText || '').toLowerCase();
 
     if (path.indexOf('/v1/images/generations') >= 0) {
+      var activeModel = getActiveImageModel();
+      if (isGeminiFlashImageModel(activeModel)) {
+        return {
+          upstreamFormat: 'openai-chat-image',
+          clientFormat: 'gemini-image',
+          upstreamPublicUrl: '/api/ai-muling/v1/chat/completions',
+          transformBody: buildGeminiChatImageBody,
+          reason: 'gemini-flash-image-chat-compatible-endpoint'
+        };
+      }
+
       return {
         upstreamFormat: 'openai-image',
         clientFormat: 'gemini-image',
@@ -174,12 +201,14 @@
 
   var createTask = async function (request, bodyText, route) {
     var upstreamBody = route.transformBody ? route.transformBody(bodyText) : bodyText;
-    var upstreamPublicUrl = request.url;
-    try {
-      var parsedUpstreamUrl = new URL(request.url, window.location.href);
-      upstreamPublicUrl = parsedUpstreamUrl.pathname + (parsedUpstreamUrl.search || '');
-    } catch (error) {
-      // Keep the original request URL if URL parsing fails.
+    var upstreamPublicUrl = route.upstreamPublicUrl || request.url;
+    if (!route.upstreamPublicUrl) {
+      try {
+        var parsedUpstreamUrl = new URL(request.url, window.location.href);
+        upstreamPublicUrl = parsedUpstreamUrl.pathname + (parsedUpstreamUrl.search || '');
+      } catch (error) {
+        // Keep the original request URL if URL parsing fails.
+      }
     }
     var response = await originalFetch(TASK_ENDPOINT, {
       method: 'POST',

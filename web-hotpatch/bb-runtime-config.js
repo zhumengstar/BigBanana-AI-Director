@@ -19,7 +19,7 @@
   }
   function modelParams(type){
     if (type === "chat") return { temperature: 0.7, maxTokens: 8192 };
-    if (type === "image") return { apiFormat: "openai", defaultAspectRatio: "9:16", supportedAspectRatios: ["16:9", "9:16", "1:1"], size: "1024x1024", aspectRatioSizeMap: { "16:9": "1024x1024", "9:16": "1024x1024", "1:1": "1024x1024" } };
+    if (type === "image") return { apiFormat: "gemini", defaultAspectRatio: "9:16", supportedAspectRatios: ["16:9", "9:16", "1:1"], outputImageCount: 1, resultSelectionMode: "first", size: "1024x1024", aspectRatioSizeMap: { "16:9": "1024x1024", "9:16": "1024x1024", "1:1": "1024x1024" } };
     if (type === "video") return { mode: "async", defaultDuration: 5, supportedDurations: [5, 10, 15], defaultAspectRatio: "9:16", supportedAspectRatios: ["9:16", "16:9"], resolution: "1080p", useReferenceArray: true, maxReferenceImages: 4, videoPromptMode: "auto" };
     if (type === "audio") return { voice: "alloy", defaultVoice: "alloy", outputFormat: "mp3" };
     return {};
@@ -34,7 +34,7 @@
     ].map(function(p){ var q = Object.assign({}, p); if (!q.apiKey) delete q.apiKey; return q; });
     var models = [
       { id: "custom-chat-gpt-5-5", apiModel: "gpt-5.5", name: "Custom GPT-5.5", type: "chat", providerId: customProviderId, endpoint: "/v1/chat/completions", isBuiltIn: false, isEnabled: true, params: modelParams("chat") },
-      { id: "custom-image-gpt-image-2", apiModel: "codex-gpt-image-2", name: "Custom Codex GPT Image 2", type: "image", providerId: customProviderId, endpoint: "/v1/images/generations", isBuiltIn: false, isEnabled: true, params: modelParams("image") },
+      { id: "custom-image-gpt-image-2", apiModel: "gemini-3.1-flash-image", name: "Custom Gemini 3.1 Flash Image", type: "image", providerId: customProviderId, endpoint: "/v1/images/generations", isBuiltIn: false, isEnabled: true, params: modelParams("image") },
       { id: "seedance-newapi-2-0-260128", apiModel: seedanceModel, name: "Seedance 2.0 NewAPI", type: "video", providerId: seedanceProviderId, endpoint: "/v1/videos", isBuiltIn: false, isEnabled: true, params: modelParams("video") },
       { id: "custom-audio-gpt-audio-1-5", apiModel: "gpt-audio-1.5", name: "Custom GPT Audio 1.5", type: "audio", providerId: customProviderId, endpoint: "/v1/chat/completions", isBuiltIn: false, isEnabled: true, params: modelParams("audio") }
     ];
