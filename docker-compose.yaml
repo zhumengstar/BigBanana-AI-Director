@@ -46,6 +46,7 @@ services:
       NEW_API_ALLOWED_HOSTS: "ai.muling.store,api.antsk.cn"
       NEW_API_ALLOW_PRIVATE_HOSTS: "false"
       NEW_API_DEFAULT_ENDPOINT: "https://ai.muling.store"
+      AI_MULING_API_KEY: ${AI_MULING_API_KEY:-}
       PROJECT_STORE_PORT: "8790"
       PROJECT_STORE_DATA_DIR: "/data"
       PROJECT_STORE_BACKUP_FILE: "project-store-backup.json"

@@ -12,6 +12,7 @@ const IMAGE_TASKS_FILE = process.env.PROJECT_STORE_IMAGE_TASKS_FILE || 'image-ta
 const MAX_BODY_BYTES = Number.parseInt(process.env.PROJECT_STORE_MAX_BODY_BYTES || `${200 * 1024 * 1024}`, 10);
 const CORS_ORIGIN = process.env.PROJECT_STORE_CORS_ORIGIN || '*';
 const IMAGE_TASK_WORKERS = Math.max(1, Number.parseInt(process.env.PROJECT_STORE_IMAGE_TASK_WORKERS || '1', 10));
+const AI_MULING_API_KEY = process.env.AI_MULING_API_KEY || '';
 
 const backupPath = path.join(DATA_DIR, BACKUP_FILE);
 const imageTasksPath = path.join(DATA_DIR, IMAGE_TASKS_FILE);
@@ -272,6 +273,25 @@ const normalizeUpstreamUrl = (rawUrl) => {
   }
 
   throw new Error('Unsupported upstream URL.');
+};
+
+const authorizationForUpstream = (rawUrl, providedAuthorization) => {
+  const authorization = String(providedAuthorization || '').trim();
+  if (/^Bearer\s+\S+/i.test(authorization)) return authorization;
+
+  try {
+    const input = new URL(String(rawUrl || ''), 'http://local.bigbanana');
+    const isAiMuling = input.hostname === 'ai.muling.store'
+      || input.pathname.startsWith('/api/ai-muling/')
+      || input.pathname.startsWith('/api/new-api/');
+    if (isAiMuling && AI_MULING_API_KEY.trim()) {
+      return `Bearer ${AI_MULING_API_KEY.trim()}`;
+    }
+  } catch {
+    // Missing or malformed upstream URLs are validated by normalizeUpstreamUrl.
+  }
+
+  return authorization || undefined;
 };
 
 const dataUrlFromMediaUrl = async (mediaUrl) => {
@@ -617,17 +637,19 @@ export const createProjectStoreHandler = () => async (req, res, next) => {
         const taskPath = String(payload?.path || '/v1/images/generations');
         if (!endpoint) throw new Error('Missing image task endpoint.');
         if (!taskPath.startsWith('/')) throw new Error('Invalid image task path.');
+        const upstreamUrl = `${endpoint}${taskPath}`;
+        const authorization = authorizationForUpstream(upstreamUrl, payload?.authorization);
 
         const task = await createPersistentImageTask({
           responseFormat: 'openai-image',
-          upstreamPublicUrl: `${endpoint}${taskPath}`,
+          upstreamPublicUrl: upstreamUrl,
           upstream: {
-            url: `${endpoint}${taskPath}`,
+            url: upstreamUrl,
             method: 'POST',
             headers: {
               Accept: '*/*',
               'Content-Type': 'application/json',
-              ...(payload?.authorization ? { Authorization: payload.authorization } : {}),
+              ...(authorization ? { Authorization: authorization } : {}),
             },
             body: JSON.stringify(payload?.payload || {}),
           },
@@ -711,13 +733,18 @@ export const createProjectStoreHandler = () => async (req, res, next) => {
       try {
         const upstream = payload?.upstream || {};
         const upstreamUrl = normalizeUpstreamUrl(upstream.url);
+        const authorization = authorizationForUpstream(upstream.url || upstreamUrl, upstream.headers?.Authorization || upstream.headers?.authorization);
+        const headers = {
+          ...(upstream.headers || {}),
+          ...(authorization ? { Authorization: authorization } : {}),
+        };
         const task = await createPersistentImageTask({
           responseFormat: payload.responseFormat || upstream.responseFormat || null,
           upstreamPublicUrl: upstream.url,
           upstream: {
             url: upstreamUrl,
             method: upstream.method || 'POST',
-            headers: upstream.headers,
+            headers,
             body: typeof upstream.body === 'string' ? upstream.body : JSON.stringify(upstream.body || {}),
           },
         });

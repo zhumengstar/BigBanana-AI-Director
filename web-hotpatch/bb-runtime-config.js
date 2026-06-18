@@ -14,7 +14,7 @@
     try {
       var providers = registry && Array.isArray(registry.providers) ? registry.providers : [];
       var p = providers.find(function(x){ return x && x.id === providerId; });
-      return cleanKey((p && p.apiKey) || (registry && registry.globalApiKey) || localStorage.getItem(legacyGlobalKey));
+      return cleanKey((p && p.apiKey) || localStorage.getItem(legacyGlobalKey));
     } catch(e) { return undefined; }
   }
   function modelParams(type){
@@ -39,7 +39,6 @@
       { id: "custom-audio-gpt-audio-1-5", apiModel: "gpt-audio-1.5", name: "Custom GPT Audio 1.5", type: "audio", providerId: customProviderId, endpoint: "/v1/chat/completions", isBuiltIn: false, isEnabled: true, params: modelParams("audio") }
     ];
     var registry = { providers: providers, models: models, activeModels: { chat: "custom-chat-gpt-5-5", image: "custom-image-gpt-image-2", video: "seedance-newapi-2-0-260128", audio: "custom-audio-gpt-audio-1-5" } };
-    if (aiKey) registry.globalApiKey = aiKey;
     return registry;
   }
   var internal = false;
