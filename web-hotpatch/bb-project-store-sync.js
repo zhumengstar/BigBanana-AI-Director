@@ -5,6 +5,7 @@
   var ENDPOINT = '/api/project-store/backup';
   var MEDIA_ENDPOINT = '/api/project-store/media';
   var MEDIA_URL_PREFIX = '/api/project-store/media/';
+  var IMAGE_TASKS_ENDPOINT = '/api/project-store/image-tasks';
   var SAVE_DELAY_MS = 1200;
 
   var saveTimer = null;
@@ -251,6 +252,159 @@
     return false;
   };
 
+  var normalizeText = function (value) {
+    return String(value || '')
+      .toLowerCase()
+      .replace(/\s+/g, ' ')
+      .trim();
+  };
+
+  var getSlotPrompt = function (value) {
+    if (!value || typeof value !== 'object') return '';
+    return normalizeText([
+      value.visualPrompt,
+      value.prompt,
+      value.description,
+      value.name,
+      value.location,
+      value.actionSummary
+    ].filter(Boolean).join(' '));
+  };
+
+  var taskMatchesSlot = function (task, slot) {
+    var taskPrompt = normalizeText(task && task.prompt);
+    var slotPrompt = getSlotPrompt(slot);
+    if (!taskPrompt || !slotPrompt) return false;
+    if (taskPrompt.indexOf(slotPrompt) >= 0 || slotPrompt.indexOf(taskPrompt) >= 0) return true;
+
+    var slotWords = slotPrompt.split(' ').filter(function (word) { return word.length >= 4; });
+    if (slotWords.length === 0) return false;
+    var matched = slotWords.filter(function (word) { return taskPrompt.indexOf(word) >= 0; }).length;
+    return matched >= Math.min(6, Math.ceil(slotWords.length * 0.55));
+  };
+
+  var collectUsedImageTaskIds = function (value, used) {
+    if (!value || typeof value !== 'object') return;
+    if (Array.isArray(value)) {
+      value.forEach(function (item) { collectUsedImageTaskIds(item, used); });
+      return;
+    }
+
+    ['imageTaskId', 'recoveredImageTaskId', 'serverImageTaskId'].forEach(function (key) {
+      if (typeof value[key] === 'string' && value[key]) used[value[key]] = true;
+    });
+
+    Object.keys(value).forEach(function (key) {
+      collectUsedImageTaskIds(value[key], used);
+    });
+  };
+
+  var shouldRecoverImageSlot = function (value) {
+    if (!value || typeof value !== 'object') return false;
+    if (hasImageReference(value)) return false;
+    var status = String(value.status || '').toLowerCase();
+    if (status !== 'generating' && status !== 'failed') return false;
+    if (value.type && value.resourceId && value.model && value.prompt) return false;
+    return Boolean(
+      value.visualPrompt ||
+      value.prompt ||
+      value.description ||
+      value.name ||
+      value.location ||
+      value.actionSummary ||
+      Array.isArray(value.panels)
+    );
+  };
+
+  var applyTaskImageToSlot = function (slot, task) {
+    var imageUrl = task && task.imageUrl;
+    if (!imageUrl) return false;
+
+    if ('imageUrl' in slot || slot.type === 'start' || slot.type === 'end' || Array.isArray(slot.panels)) {
+      slot.imageUrl = imageUrl;
+    } else {
+      slot.referenceImage = imageUrl;
+    }
+
+    slot.status = 'completed';
+    slot.recoveredImageTaskId = task.id;
+    slot.recoveredImageTaskAt = Date.now();
+    delete slot.error;
+    delete slot.failureReason;
+    return true;
+  };
+
+  var recoverImageSlotsFromTasks = function (value, tasks, used) {
+    if (!value || typeof value !== 'object' || tasks.length === 0) return 0;
+    var recovered = 0;
+
+    if (Array.isArray(value)) {
+      for (var i = 0; i < value.length; i += 1) {
+        recovered += recoverImageSlotsFromTasks(value[i], tasks, used);
+      }
+      return recovered;
+    }
+
+    if (shouldRecoverImageSlot(value)) {
+      var matchedTask = tasks.find(function (task) {
+        return !used[task.id] && taskMatchesSlot(task, value);
+      });
+      if (!matchedTask && String(value.status || '').toLowerCase() === 'generating') {
+        matchedTask = tasks.find(function (task) { return !used[task.id]; });
+      }
+      if (matchedTask && applyTaskImageToSlot(value, matchedTask)) {
+        used[matchedTask.id] = true;
+        recovered += 1;
+      }
+    }
+
+    Object.keys(value).forEach(function (key) {
+      recovered += recoverImageSlotsFromTasks(value[key], tasks, used);
+    });
+
+    return recovered;
+  };
+
+  var fetchCompletedImageTasks = async function () {
+    try {
+      var response = await fetch(IMAGE_TASKS_ENDPOINT + '?limit=200', { method: 'GET', cache: 'no-store' });
+      if (!response.ok) return [];
+      var result = await response.json();
+      return (result.tasks || [])
+        .filter(function (task) {
+          return task && task.id && task.status === 'completed' && task.imageUrl;
+        })
+        .sort(function (a, b) {
+          return (a.completedAt || a.updatedAt || a.createdAt || 0) - (b.completedAt || b.updatedAt || b.createdAt || 0);
+        });
+    } catch (error) {
+      console.warn('[project-store-sync] image task recovery lookup failed', error);
+      return [];
+    }
+  };
+
+  var recoverCompletedImageTasks = async function (payload) {
+    if (!payload || !payload.stores) return payload;
+    var tasks = await fetchCompletedImageTasks();
+    if (tasks.length === 0) return payload;
+
+    var used = {};
+    collectUsedImageTaskIds(payload, used);
+    var recovered = recoverImageSlotsFromTasks(payload.stores, tasks, used);
+    if (recovered > 0) {
+      payload.imageTasksRecoveredAt = Date.now();
+      payload.imageTasksRecoveredCount = (payload.imageTasksRecoveredCount || 0) + recovered;
+      window.__BIGBANANA_IMAGE_TASK_RECOVERY__ = {
+        ok: true,
+        recovered: recovered,
+        checkedTasks: tasks.length,
+        at: payload.imageTasksRecoveredAt
+      };
+    }
+
+    return payload;
+  };
+
   var isEmptyImageAssetFailure = function (value) {
     if (!value || typeof value !== 'object' || value.status !== 'failed') return false;
     if (value.error || value.message || value.failureReason) return false;
@@ -310,6 +464,7 @@
       if (countPayloadItems(payload) === 0) return;
       payload = clearTransientGenerationFailures(payload);
       payload = recoverStaleGeneratingState(payload);
+      payload = await recoverCompletedImageTasks(payload);
       payload = await materializePayloadMedia(payload);
 
       var signature = contentSignature(payload);
@@ -349,6 +504,7 @@
         if (serverPayload && countPayloadItems(serverPayload) > 0) {
           var localPayload = await exportPayload();
           serverPayload = recoverStaleGeneratingState(clearTransientGenerationFailures(serverPayload));
+          serverPayload = await recoverCompletedImageTasks(serverPayload);
           var serverSignature = contentSignature(serverPayload);
           var localSignature = contentSignature(localPayload);
 

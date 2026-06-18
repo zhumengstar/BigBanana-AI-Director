@@ -338,6 +338,30 @@ const downloadRemoteImage = async (remoteUrl) => {
   return { bytes, mimeType };
 };
 
+const extractPromptFromUpstreamBody = (body) => {
+  let parsed;
+  try {
+    parsed = typeof body === 'string' ? JSON.parse(body) : body;
+  } catch {
+    return '';
+  }
+
+  if (typeof parsed?.prompt === 'string' && parsed.prompt.trim()) {
+    return parsed.prompt.trim();
+  }
+
+  const texts = [];
+  (parsed?.contents || []).forEach((content) => {
+    (content?.parts || []).forEach((part) => {
+      if (typeof part?.text === 'string' && part.text.trim()) {
+        texts.push(part.text.trim());
+      }
+    });
+  });
+
+  return texts.join('\n\n').trim();
+};
+
 const runImageTask = async (task) => {
   task.status = 'running';
   task.startedAt = Date.now();
@@ -448,6 +472,7 @@ const taskPublicView = async (task, includeDataUrl = false) => {
     bytes: task.bytes || null,
     responseFormat: task.responseFormat || null,
     upstreamUrl: task.upstreamPublicUrl || null,
+    prompt: task.prompt || extractPromptFromUpstreamBody(task.upstream?.body) || null,
     error: task.error || null,
   };
 
@@ -477,6 +502,7 @@ const createPersistentImageTask = async ({ responseFormat, upstreamPublicUrl, up
     },
     error: null,
   };
+  task.prompt = extractPromptFromUpstreamBody(task.upstream.body) || null;
 
   imageTasks.set(id, task);
   await persistImageTasks();
