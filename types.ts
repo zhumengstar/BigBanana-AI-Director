@@ -6,6 +6,8 @@ export interface CharacterVariation {
   negativePrompt?: string; // 负面提示词，用于排除不想要的元素
   referenceImage?: string; // 角色变体参考图，存储为base64格式（data:image/png;base64,...）
   status?: 'pending' | 'generating' | 'completed' | 'failed'; // 生成状态，用于loading状态持久化
+  error?: string;
+  failureReason?: string;
 }
 
 export type PromptVersionSource = 'ai-generated' | 'manual-edit' | 'rollback' | 'imported' | 'system';
@@ -138,6 +140,8 @@ export interface Character {
   turnaround?: CharacterTurnaroundData;
   variations: CharacterVariation[];
   status?: 'pending' | 'generating' | 'completed' | 'failed';
+  error?: string;
+  failureReason?: string;
   libraryId?: string;
   libraryVersion?: number;
   version?: number;
@@ -153,6 +157,8 @@ export interface Scene {
   negativePrompt?: string; // 负面提示词，用于排除不想要的元素
   referenceImage?: string; // 场景参考图，存储为base64格式（data:image/png;base64,...）
   status?: 'pending' | 'generating' | 'completed' | 'failed'; // 生成状态，用于loading状态持久化
+  error?: string;
+  failureReason?: string;
   libraryId?: string;
   libraryVersion?: number;
   version?: number;
@@ -172,6 +178,8 @@ export interface Prop {
   negativePrompt?: string; // 负面提示词，用于排除不想要的元素
   referenceImage?: string; // 道具参考图，存储为base64格式（data:image/png;base64,...）
   status?: 'pending' | 'generating' | 'completed' | 'failed'; // 生成状态，用于loading状态持久化
+  error?: string;
+  failureReason?: string;
   libraryId?: string;
   libraryVersion?: number;
   version?: number;

@@ -4,6 +4,7 @@ import { Character } from '../../types';
 import PromptEditor from './PromptEditor';
 import ImageUploadButton from './ImageUploadButton';
 import InlineEditableText from './InlineEditableText';
+import { formatFailureStatus } from './failureReason';
 
 interface CharacterCardProps {
   character: Character;
@@ -35,6 +36,7 @@ const CharacterCard: React.FC<CharacterCardProps> = ({
   onReplaceFromLibrary,
 }) => {
   const isLinked = !!character.libraryId;
+  const failureStatus = formatFailureStatus(character);
 
   return (
     <div className={`bg-[var(--bg-surface)] border rounded-xl overflow-hidden flex flex-col group transition-all hover:shadow-lg ${isLinked ? 'border-[var(--accent-border)] hover:border-[var(--accent)]' : 'border-[var(--border-primary)] hover:border-[var(--border-secondary)]'}`}>
@@ -63,7 +65,7 @@ const CharacterCard: React.FC<CharacterCardProps> = ({
                 {character.status === 'failed' ? (
                   <>
                     <AlertCircle className="w-8 h-8 mb-2 text-[var(--error)]" />
-                    <span className="text-[10px] text-[var(--error)] mb-2">生成失败</span>
+                    <span className="text-[10px] text-[var(--error)] mb-2 max-w-full break-words" title={failureStatus}>{failureStatus}</span>
                     <ImageUploadButton
                       variant="inline"
                       size="small"

@@ -5,6 +5,7 @@ import { PROP_CATEGORIES } from './constants';
 import PromptEditor from './PromptEditor';
 import ImageUploadButton from './ImageUploadButton';
 import InlineEditableText from './InlineEditableText';
+import { formatFailureStatus } from './failureReason';
 
 interface PropCardProps {
   prop: Prop;
@@ -29,6 +30,8 @@ const PropCard: React.FC<PropCardProps> = ({
   onUpdateInfo,
   onAddToLibrary,
 }) => {
+  const failureStatus = formatFailureStatus(prop);
+
   return (
     <div className="bg-[var(--bg-surface)] border border-[var(--border-primary)] rounded-xl overflow-hidden flex flex-col group hover:border-[var(--border-secondary)] transition-all hover:shadow-lg">
       <div
@@ -52,7 +55,7 @@ const PropCard: React.FC<PropCardProps> = ({
             ) : prop.status === 'failed' ? (
               <>
                 <AlertCircle className="w-10 h-10 mb-3 text-[var(--error)]" />
-                <span className="text-[10px] text-[var(--error)] mb-2">生成失败</span>
+                <span className="text-[10px] text-[var(--error)] mb-2 max-w-full break-words" title={failureStatus}>{failureStatus}</span>
                 <ImageUploadButton
                   variant="inline"
                   size="small"

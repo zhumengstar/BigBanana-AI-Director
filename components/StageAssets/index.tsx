@@ -36,6 +36,12 @@ interface Props {
   onGeneratingChange?: (isGenerating: boolean) => void;
 }
 
+const getGenerationErrorMessage = (error: unknown): string => {
+  if (error instanceof Error && error.message) return error.message;
+  if (typeof error === 'string' && error.trim()) return error.trim();
+  return '图片生成失败';
+};
+
 const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, onGeneratingChange }) => {
   const { showAlert } = useAlert();
   const [batchProgress, setBatchProgress] = useState<{current: number, total: number} | null>(null);
@@ -251,10 +257,18 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
       const newData = cloneScriptData(prev.scriptData);
       if (type === 'character') {
         const c = newData.characters.find(c => compareIds(c.id, id));
-        if (c) c.status = 'generating';
+        if (c) {
+          c.status = 'generating';
+          delete c.error;
+          delete c.failureReason;
+        }
       } else {
         const s = newData.scenes.find(s => compareIds(s.id, id));
-        if (s) s.status = 'generating';
+        if (s) {
+          s.status = 'generating';
+          delete s.error;
+          delete s.failureReason;
+        }
       }
       return { ...prev, scriptData: newData };
     });
@@ -376,12 +390,16 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
           if (c) {
             c.referenceImage = imageUrl;
             c.status = 'completed';
+            delete c.error;
+            delete c.failureReason;
           }
         } else {
           const s = newData.scenes.find(s => compareIds(s.id, id));
           if (s) {
             s.referenceImage = imageUrl;
             s.status = 'completed';
+            delete s.error;
+            delete s.failureReason;
           }
         }
         return { ...prev, scriptData: newData };
@@ -389,16 +407,23 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
 
     } catch (e: any) {
       console.error(e);
+      const errorMessage = getGenerationErrorMessage(e);
       // 璁剧疆澶辫触鐘舵€?
       updateProject(prev => {
         if (!prev.scriptData) return prev;
         const newData = cloneScriptData(prev.scriptData);
         if (type === 'character') {
           const c = newData.characters.find(c => compareIds(c.id, id));
-          if (c) c.status = 'failed';
+          if (c) {
+            c.status = 'failed';
+            c.error = errorMessage;
+          }
         } else {
           const s = newData.scenes.find(s => compareIds(s.id, id));
-          if (s) s.status = 'failed';
+          if (s) {
+            s.status = 'failed';
+            s.error = errorMessage;
+          }
         }
         return { ...prev, scriptData: newData };
       });
@@ -898,7 +923,11 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
       if (!prev.scriptData) return prev;
       const newData = cloneScriptData(prev.scriptData);
       const p = (newData.props || []).find(prop => compareIds(prop.id, propId));
-      if (p) p.status = 'generating';
+      if (p) {
+        p.status = 'generating';
+        delete p.error;
+        delete p.failureReason;
+      }
       return { ...prev, scriptData: newData };
     });
 
@@ -964,6 +993,8 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
         if (updated) {
           updated.referenceImage = imageUrl;
           updated.status = 'completed';
+          delete updated.error;
+          delete updated.failureReason;
           if (!updated.visualPrompt) {
             updated.promptVersions = updatePromptWithVersion(
               updated.visualPrompt,
@@ -982,11 +1013,15 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
       });
     } catch (e: any) {
       console.error(e);
+      const errorMessage = getGenerationErrorMessage(e);
       updateProject(prev => {
         if (!prev.scriptData) return prev;
         const errData = cloneScriptData(prev.scriptData);
         const errP = (errData.props || []).find(p => compareIds(p.id, propId));
-        if (errP) errP.status = 'failed';
+        if (errP) {
+          errP.status = 'failed';
+          errP.error = errorMessage;
+        }
         return { ...prev, scriptData: errData };
       });
       if (onApiKeyError && onApiKeyError(e)) return;
@@ -1002,6 +1037,8 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
         if (prop) {
           prop.referenceImage = base64;
           prop.status = 'completed';
+          delete prop.error;
+          delete prop.failureReason;
         }
         return { ...prev, scriptData: newData };
       });
@@ -1155,7 +1192,11 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
       const newData = cloneScriptData(project.scriptData);
       const c = newData.characters.find(c => compareIds(c.id, charId));
       const v = c?.variations?.find(v => compareIds(v.id, varId));
-      if (v) v.status = 'generating';
+      if (v) {
+        v.status = 'generating';
+        delete v.error;
+        delete v.failureReason;
+      }
       updateProject({ scriptData: newData });
     }
     try {
@@ -1182,17 +1223,23 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
       if (v) {
         v.referenceImage = imageUrl;
         v.status = 'completed';
+        delete v.error;
+        delete v.failureReason;
       }
 
       updateProject({ scriptData: newData });
     } catch (e: any) {
       console.error(e);
+      const errorMessage = getGenerationErrorMessage(e);
       // 设置失败状态
       if (project.scriptData) {
         const newData = cloneScriptData(project.scriptData);
         const c = newData.characters.find(c => compareIds(c.id, charId));
         const v = c?.variations?.find(v => compareIds(v.id, varId));
-        if (v) v.status = 'failed';
+        if (v) {
+          v.status = 'failed';
+          v.error = errorMessage;
+        }
         updateProject({ scriptData: newData });
       }
       if (onApiKeyError && onApiKeyError(e)) {
@@ -1217,6 +1264,8 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
         if (variation) {
           variation.referenceImage = base64;
           variation.status = 'completed';
+          delete variation.error;
+          delete variation.failureReason;
         }
         return { ...prev, scriptData: newData };
       });
