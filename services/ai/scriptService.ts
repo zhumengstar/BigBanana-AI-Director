@@ -48,7 +48,7 @@ export { setScriptLogCallback, clearScriptLogCallback, logScriptProgress } from 
 export const parseScriptStructure = async (
   rawText: string,
   language: string = '中文',
-  model: string = 'gpt-5.2',
+  model: string = '',
   abortSignal?: AbortSignal
 ): Promise<ScriptData> => {
   const wait = async (ms: number) =>
@@ -241,7 +241,7 @@ export const parseScriptStructure = async (
  */
 export const enrichScriptDataVisuals = async (
   scriptData: ScriptData,
-  model: string = 'gpt-5.2',
+  model: string = '',
   visualStyle: string = '3d-animation',
   language: string = '中文',
   options?: {
@@ -445,7 +445,7 @@ export const enrichScriptDataVisuals = async (
 export const parseScriptToData = async (
   rawText: string,
   language: string = '中文',
-  model: string = 'gpt-5.2',
+  model: string = '',
   visualStyle: string = '3d-animation'
 ): Promise<ScriptData> => {
   console.log('📝 parseScriptToData 调用 - 使用模型:', model, '视觉风格:', visualStyle);
@@ -924,7 +924,7 @@ const applyScriptStageQualityPipeline = (
  */
 export const generateShotList = async (
   scriptData: ScriptData,
-  model: string = 'gpt-5.2',
+  model: string = '',
   abortOrOptions?: AbortSignal | GenerateShotListOptions
 ): Promise<Shot[]> => {
   const options: GenerateShotListOptions = isAbortSignalLike(abortOrOptions)
@@ -1543,7 +1543,7 @@ const resolveContinueLimits = (
 export const continueScript = async (
   existingScript: string,
   language: string = '中文',
-  model: string = 'gpt-5.2',
+  model: string = '',
   options?: ContinueScriptOptions
 ): Promise<string> => {
   console.log('✍️ continueScript 调用 - 使用模型:', model);
@@ -1607,7 +1607,7 @@ ${existingScript}
 export const continueScriptStream = async (
   existingScript: string,
   language: string = '中文',
-  model: string = 'gpt-5.2',
+  model: string = '',
   onDelta?: (delta: string) => void,
   options?: ContinueScriptOptions
 ): Promise<string> => {
@@ -1684,7 +1684,7 @@ ${existingScript}
 export const rewriteScript = async (
   originalScript: string,
   language: string = '中文',
-  model: string = 'gpt-5.2',
+  model: string = '',
   options?: RewriteScriptOptions
 ): Promise<string> => {
   console.log('🔄 rewriteScript 调用 - 使用模型:', model);
@@ -1745,7 +1745,7 @@ ${originalScript}
 export const rewriteScriptStream = async (
   originalScript: string,
   language: string = '中文',
-  model: string = 'gpt-5.2',
+  model: string = '',
   onDelta?: (delta: string) => void,
   options?: RewriteScriptOptions
 ): Promise<string> => {
@@ -1825,7 +1825,7 @@ export const rewriteScriptSegment = async (
   selectedText: string,
   requirements: string,
   language: string = '中文',
-  model: string = 'gpt-5.2'
+  model: string = ''
 ): Promise<string> => {
   console.log('🧩 rewriteScriptSegment 调用 - 使用模型:', model);
   const startTime = Date.now();
@@ -1881,7 +1881,7 @@ export const rewriteScriptSegmentStream = async (
   selectedText: string,
   requirements: string,
   language: string = '中文',
-  model: string = 'gpt-5.2',
+  model: string = '',
   onDelta?: (delta: string) => void
 ): Promise<string> => {
   console.log('🧩 rewriteScriptSegmentStream 调用 - 使用模型:', model);

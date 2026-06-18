@@ -108,6 +108,32 @@ const createVideoFileName = (blob: Blob, options?: PersistVideoOptions): string 
   return `${parts.join('_') || 'video'}.${extension}`;
 };
 
+const uploadBlobToServerMedia = async (blob: Blob, options?: PersistVideoOptions): Promise<string> => {
+  const dataUrl = await blobToDataUrl(blob);
+  const response = await fetch('/api/project-store/media', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      dataUrl,
+      folder: 'videos',
+      filenamePrefix: createVideoFileName(blob, options).replace(/\.[^.]+$/, ''),
+    }),
+  });
+
+  let result: any = null;
+  try {
+    result = await response.json();
+  } catch {
+    result = null;
+  }
+
+  if (!response.ok || !result?.ok || !result?.url) {
+    throw new Error(result?.message || `Server media upload failed: HTTP ${response.status}`);
+  }
+
+  return result.url;
+};
+
 const opfsRefToFileName = (ref: string): string => {
   return decodeURIComponent(ref.slice(OPFS_VIDEO_PREFIX.length));
 };
@@ -142,7 +168,7 @@ export const persistVideoReference = async (
   value: string,
   options?: PersistVideoOptions
 ): Promise<string> => {
-  if (!value || isOpfsVideoRef(value) || !supportsOPFSVideoStorage()) {
+  if (!value || value.startsWith('/api/project-store/media/')) {
     return value;
   }
 
@@ -156,13 +182,35 @@ export const persistVideoReference = async (
       return value;
     }
 
-    const opfsRef = await blobToOpfsRef(blob, options);
+    const serverUrl = await uploadBlobToServerMedia(blob, options);
     if (value.startsWith('blob:')) {
       URL.revokeObjectURL(value);
     }
-    return opfsRef;
-  } catch (error) {
-    console.warn('Persist video to OPFS failed, fallback to original value.', error);
+    return serverUrl;
+  } catch (serverError) {
+    if (!supportsOPFSVideoStorage() || isOpfsVideoRef(value)) {
+      console.warn('Persist video to server failed, fallback to original value.', serverError);
+      return value;
+    }
+
+    try {
+      let blob: Blob;
+      if (isVideoDataUrl(value)) {
+        blob = dataUrlToBlob(value);
+      } else if (/^https?:\/\//i.test(value) || value.startsWith('blob:')) {
+        blob = await fetchBlobFromUrl(value);
+      } else {
+        return value;
+      }
+
+      const opfsRef = await blobToOpfsRef(blob, options);
+      if (value.startsWith('blob:')) {
+        URL.revokeObjectURL(value);
+      }
+      return opfsRef;
+    } catch (opfsError) {
+      console.warn('Persist video to server and OPFS failed, fallback to original value.', opfsError);
+    }
     return value;
   }
 };
@@ -193,7 +241,7 @@ export const resolveVideoPlaybackSrc = async (value: string): Promise<ResolvePla
 export const migrateProjectVideosToOPFS = async (
   project: ProjectState
 ): Promise<{ project: ProjectState; changed: boolean; migratedCount: number }> => {
-  if (!project?.shots?.length || !supportsOPFSVideoStorage()) {
+  if (!project?.shots?.length) {
     return { project, changed: false, migratedCount: 0 };
   }
 

@@ -14,12 +14,12 @@ import ModelConfigModal from './components/ModelConfig';
 import { ProjectState } from './types';
 import { Save, CheckCircle } from 'lucide-react';
 import { saveEpisode, loadEpisode } from './services/storageService';
-import { setGlobalApiKey } from './services/aiService';
 import { setLogCallback, clearLogCallback } from './services/renderLogService';
 import { useAlert } from './components/GlobalAlert';
 import { ProjectProvider, useProjectContext } from './contexts/ProjectContext';
 import { checkCharacterSync, checkSceneSync, checkPropSync } from './services/characterSyncService';
 import AssetSyncBanner from './components/CharacterLibrary/AssetSyncBanner';
+import { fetchServerModelConfiguration } from './services/modelRegistry';
 import logoImg from './logo.png';
 
 const preserveInFlightGenerationStates = (episode: ProjectState): ProjectState => ({
@@ -257,11 +257,9 @@ function AppRoutes() {
   const navigate = useNavigate();
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [showModelConfig, setShowModelConfig] = useState(false);
-  const [apiKey, setApiKeyState] = useState('');
 
   useEffect(() => {
-    const storedKey = localStorage.getItem('antsk_api_key');
-    if (storedKey) { setApiKeyState(storedKey); setGlobalApiKey(storedKey); }
+    fetchServerModelConfiguration().catch(() => {});
     if (shouldShowOnboarding()) setShowOnboarding(true);
   }, []);
 
@@ -280,11 +278,6 @@ function AppRoutes() {
     window.addEventListener('unhandledrejection', handleRejection);
     return () => { window.removeEventListener('error', handleError); window.removeEventListener('unhandledrejection', handleRejection); };
   }, []);
-
-  const handleSaveApiKey = (key: string) => {
-    if (key) { setApiKeyState(key); setGlobalApiKey(key); localStorage.setItem('antsk_api_key', key); }
-    else { setApiKeyState(''); setGlobalApiKey(''); localStorage.removeItem('antsk_api_key'); }
-  };
 
   return (
     <>
@@ -315,7 +308,7 @@ function AppRoutes() {
           </ProjectProvider>
         } />
       </Routes>
-      {showOnboarding && <Onboarding onComplete={() => setShowOnboarding(false)} onQuickStart={() => setShowOnboarding(false)} currentApiKey={apiKey} onSaveApiKey={handleSaveApiKey} />}
+      {showOnboarding && <Onboarding onComplete={() => setShowOnboarding(false)} onQuickStart={() => setShowOnboarding(false)} currentApiKey="" onSaveApiKey={() => {}} />}
       <ModelConfigModal isOpen={showModelConfig} onClose={() => setShowModelConfig(false)} />
     </>
   );

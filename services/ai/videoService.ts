@@ -622,7 +622,7 @@ export const generateVideo = async (
 
     try {
       const videoBase64 = await convertVideoUrlToBase64(videoUrl);
-      console.log('✅ 视频已转换为base64格式,可安全存储到IndexedDB');
+      console.log('✅ 视频已转换为base64格式,可写入项目缓存并同步服务端');
       return videoBase64;
     } catch (error: any) {
       console.error('❌ 视频转base64失败,返回原始URL:', error);

@@ -11,6 +11,7 @@ const SP_STORE = 'seriesProjects';
 const SERIES_STORE = 'series';
 const EP_STORE = 'episodes';
 const EXPORT_SCHEMA_VERSION = 3;
+const SERVER_BACKUP_ENDPOINT = '/api/project-store/backup';
 
 export interface IndexedDBExportPayload {
   schemaVersion: number;
@@ -28,6 +29,10 @@ export interface IndexedDBExportPayload {
 }
 
 let dbPromise: Promise<IDBDatabase> | null = null;
+let serverHydrationPromise: Promise<void> | null = null;
+let serverHydrated = false;
+let serverPersistTimer: number | null = null;
+let serverPersistInFlight = false;
 
 const openDB = (): Promise<IDBDatabase> => {
   if (dbPromise) return dbPromise;
@@ -67,6 +72,92 @@ const openDB = (): Promise<IDBDatabase> => {
   });
 
   return dbPromise;
+};
+
+const replaceIndexedDBWithPayload = async (payload: IndexedDBExportPayload): Promise<void> => {
+  const db = await openDB();
+  const storeNames = [ASSET_STORE_NAME, SP_STORE, SERIES_STORE, EP_STORE];
+
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(storeNames, 'readwrite');
+    storeNames.forEach(storeName => tx.objectStore(storeName).clear());
+
+    const stores = payload.stores || {};
+    (stores.assetLibrary || []).forEach(item => tx.objectStore(ASSET_STORE_NAME).put(item));
+    (stores.seriesProjects || []).forEach(item => tx.objectStore(SP_STORE).put(item));
+    (stores.series || []).forEach(item => tx.objectStore(SERIES_STORE).put(item));
+    (stores.episodes || []).forEach(item => tx.objectStore(EP_STORE).put(normalizeEpisode(item)));
+
+    tx.oncomplete = () => {
+      scheduleServerPersist();
+      resolve();
+    };
+    tx.onerror = () => reject(tx.error);
+  });
+};
+
+const hydrateFromServerOnce = async (): Promise<void> => {
+  if (serverHydrated) return;
+  if (serverHydrationPromise) return serverHydrationPromise;
+
+  serverHydrationPromise = (async () => {
+    try {
+      const response = await fetch(SERVER_BACKUP_ENDPOINT, { cache: 'no-store' });
+      if (!response.ok) return;
+      const result = await response.json();
+      const payload = result?.payload;
+      if (result?.ok && payload?.dbName === DB_NAME && payload?.stores) {
+        await replaceIndexedDBWithPayload(payload as IndexedDBExportPayload);
+      }
+    } catch (error) {
+      console.warn('加载服务端项目数据失败，继续使用浏览器缓存。', error);
+    } finally {
+      serverHydrated = true;
+    }
+  })();
+
+  return serverHydrationPromise;
+};
+
+const openSyncedDB = async (): Promise<IDBDatabase> => {
+  await hydrateFromServerOnce();
+  return openDB();
+};
+
+const persistLocalBackupToServer = async (): Promise<void> => {
+  if (serverPersistInFlight) return;
+  serverPersistInFlight = true;
+  try {
+    const payload = await exportIndexedDBData();
+    const response = await fetch(SERVER_BACKUP_ENDPOINT, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!response.ok) {
+      let detail = `HTTP ${response.status}`;
+      try {
+        const result = await response.json();
+        detail = result?.message || detail;
+      } catch {
+        // ignore
+      }
+      throw new Error(detail);
+    }
+  } catch (error) {
+    console.warn('保存项目数据到服务端失败，已保留浏览器缓存。', error);
+  } finally {
+    serverPersistInFlight = false;
+  }
+};
+
+const scheduleServerPersist = (): void => {
+  if (typeof window === 'undefined') return;
+  if (serverPersistTimer) window.clearTimeout(serverPersistTimer);
+  serverPersistTimer = window.setTimeout(() => {
+    serverPersistTimer = null;
+    void persistLocalBackupToServer();
+  }, 600);
 };
 
 const mergeByKey = <T>(
@@ -139,17 +230,20 @@ const normalizeAndPersistEpisodeVideos = async (ep: Episode): Promise<Episode> =
 // =============================================
 
 export const saveSeriesProject = async (sp: SeriesProject): Promise<void> => {
-  const db = await openDB();
+  const db = await openSyncedDB();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(SP_STORE, 'readwrite');
     tx.objectStore(SP_STORE).put({ ...sp, lastModified: Date.now() });
-    tx.oncomplete = () => resolve();
+    tx.oncomplete = () => {
+      scheduleServerPersist();
+      resolve();
+    };
     tx.onerror = () => reject(tx.error);
   });
 };
 
 export const loadSeriesProject = async (id: string): Promise<SeriesProject> => {
-  const db = await openDB();
+  const db = await openSyncedDB();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(SP_STORE, 'readonly');
     const req = tx.objectStore(SP_STORE).get(id);
@@ -162,7 +256,7 @@ export const loadSeriesProject = async (id: string): Promise<SeriesProject> => {
 };
 
 export const getAllSeriesProjects = async (): Promise<SeriesProject[]> => {
-  const db = await openDB();
+  const db = await openSyncedDB();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(SP_STORE, 'readonly');
     const req = tx.objectStore(SP_STORE).getAll();
@@ -176,7 +270,7 @@ export const getAllSeriesProjects = async (): Promise<SeriesProject[]> => {
 };
 
 export const deleteSeriesProject = async (id: string): Promise<void> => {
-  const db = await openDB();
+  const db = await openSyncedDB();
 
   const seriesList = await getSeriesByProject(id);
   const episodes = await getEpisodesByProject(id);
@@ -187,7 +281,10 @@ export const deleteSeriesProject = async (id: string): Promise<void> => {
     tx.objectStore(SP_STORE).delete(id);
     for (const s of seriesList) tx.objectStore(SERIES_STORE).delete(s.id);
     for (const ep of episodes) tx.objectStore(EP_STORE).delete(ep.id);
-    tx.oncomplete = () => resolve();
+    tx.oncomplete = () => {
+      scheduleServerPersist();
+      resolve();
+    };
     tx.onerror = () => reject(tx.error);
   });
 };
@@ -217,17 +314,20 @@ export const createNewSeriesProject = (title?: string): SeriesProject => {
 // =============================================
 
 export const saveSeries = async (s: Series): Promise<void> => {
-  const db = await openDB();
+  const db = await openSyncedDB();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(SERIES_STORE, 'readwrite');
     tx.objectStore(SERIES_STORE).put({ ...s, lastModified: Date.now() });
-    tx.oncomplete = () => resolve();
+    tx.oncomplete = () => {
+      scheduleServerPersist();
+      resolve();
+    };
     tx.onerror = () => reject(tx.error);
   });
 };
 
 export const getSeriesByProject = async (projectId: string): Promise<Series[]> => {
-  const db = await openDB();
+  const db = await openSyncedDB();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(SERIES_STORE, 'readonly');
     const idx = tx.objectStore(SERIES_STORE).index('projectId');
@@ -242,13 +342,16 @@ export const getSeriesByProject = async (projectId: string): Promise<Series[]> =
 };
 
 export const deleteSeries = async (id: string): Promise<void> => {
-  const db = await openDB();
+  const db = await openSyncedDB();
   const eps = await getEpisodesBySeries(id);
   return new Promise((resolve, reject) => {
     const tx = db.transaction([SERIES_STORE, EP_STORE], 'readwrite');
     tx.objectStore(SERIES_STORE).delete(id);
     for (const ep of eps) tx.objectStore(EP_STORE).delete(ep.id);
-    tx.oncomplete = () => resolve();
+    tx.oncomplete = () => {
+      scheduleServerPersist();
+      resolve();
+    };
     tx.onerror = () => reject(tx.error);
   });
 };
@@ -270,17 +373,20 @@ export const createNewSeries = (projectId: string, title: string, sortOrder: num
 
 export const saveEpisode = async (ep: Episode): Promise<void> => {
   const normalized = await normalizeAndPersistEpisodeVideos(ep);
-  const db = await openDB();
+  const db = await openSyncedDB();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(EP_STORE, 'readwrite');
     tx.objectStore(EP_STORE).put({ ...normalized, lastModified: Date.now() });
-    tx.oncomplete = () => resolve();
+    tx.oncomplete = () => {
+      scheduleServerPersist();
+      resolve();
+    };
     tx.onerror = () => reject(tx.error);
   });
 };
 
 export const loadEpisode = async (id: string): Promise<Episode> => {
-  const db = await openDB();
+  const db = await openSyncedDB();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(EP_STORE, 'readonly');
     const req = tx.objectStore(EP_STORE).get(id);
@@ -309,7 +415,7 @@ export const loadEpisode = async (id: string): Promise<Episode> => {
 };
 
 export const getEpisodesByProject = async (projectId: string): Promise<Episode[]> => {
-  const db = await openDB();
+  const db = await openSyncedDB();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(EP_STORE, 'readonly');
     const idx = tx.objectStore(EP_STORE).index('projectId');
@@ -324,7 +430,7 @@ export const getEpisodesByProject = async (projectId: string): Promise<Episode[]
 };
 
 export const getEpisodesBySeries = async (seriesId: string): Promise<Episode[]> => {
-  const db = await openDB();
+  const db = await openSyncedDB();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(EP_STORE, 'readonly');
     const idx = tx.objectStore(EP_STORE).index('seriesId');
@@ -339,11 +445,14 @@ export const getEpisodesBySeries = async (seriesId: string): Promise<Episode[]> 
 };
 
 export const deleteEpisode = async (id: string): Promise<void> => {
-  const db = await openDB();
+  const db = await openSyncedDB();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(EP_STORE, 'readwrite');
     tx.objectStore(EP_STORE).delete(id);
-    tx.oncomplete = () => resolve();
+    tx.oncomplete = () => {
+      scheduleServerPersist();
+      resolve();
+    };
     tx.onerror = () => reject(tx.error);
   });
 };
@@ -362,7 +471,7 @@ export const createNewEpisode = (projectId: string, seriesId: string, episodeNum
     targetDuration: '60s',
     language: '中文',
     visualStyle: '3d-animation',
-    shotGenerationModel: 'gpt-5.2',
+    shotGenerationModel: '',
     scriptData: null,
     shots: [],
     isParsingScript: false,
@@ -388,7 +497,7 @@ export const loadProjectFromDB = async (id: string): Promise<ProjectState> => {
 };
 
 export const getAllProjectsMetadata = async (): Promise<ProjectState[]> => {
-  const db = await openDB();
+  const db = await openSyncedDB();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(EP_STORE, 'readonly');
     const req = tx.objectStore(EP_STORE).getAll();
@@ -414,17 +523,20 @@ export const createNewProjectState = (): ProjectState => {
 // =============================================
 
 export const saveAssetToLibrary = async (item: AssetLibraryItem): Promise<void> => {
-  const db = await openDB();
+  const db = await openSyncedDB();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(ASSET_STORE_NAME, 'readwrite');
     tx.objectStore(ASSET_STORE_NAME).put(item);
-    tx.oncomplete = () => resolve();
+    tx.oncomplete = () => {
+      scheduleServerPersist();
+      resolve();
+    };
     tx.onerror = () => reject(tx.error);
   });
 };
 
 export const getAllAssetLibraryItems = async (): Promise<AssetLibraryItem[]> => {
-  const db = await openDB();
+  const db = await openSyncedDB();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(ASSET_STORE_NAME, 'readonly');
     const req = tx.objectStore(ASSET_STORE_NAME).getAll();
@@ -438,11 +550,14 @@ export const getAllAssetLibraryItems = async (): Promise<AssetLibraryItem[]> => 
 };
 
 export const deleteAssetFromLibrary = async (id: string): Promise<void> => {
-  const db = await openDB();
+  const db = await openSyncedDB();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(ASSET_STORE_NAME, 'readwrite');
     tx.objectStore(ASSET_STORE_NAME).delete(id);
-    tx.oncomplete = () => resolve();
+    tx.oncomplete = () => {
+      scheduleServerPersist();
+      resolve();
+    };
     tx.onerror = () => reject(tx.error);
   });
 };
@@ -452,7 +567,7 @@ export const deleteAssetFromLibrary = async (id: string): Promise<void> => {
 // =============================================
 
 export const exportIndexedDBData = async (): Promise<IndexedDBExportPayload> => {
-  const db = await openDB();
+  const db = await openSyncedDB();
   return new Promise((resolve, reject) => {
     const storeNames = [ASSET_STORE_NAME, SP_STORE, SERIES_STORE, EP_STORE];
     const tx = db.transaction(storeNames, 'readonly');
@@ -508,7 +623,7 @@ export const exportProjectData = async (project: ProjectState): Promise<IndexedD
 };
 
 export const exportSeriesProjectData = async (projectId: string): Promise<IndexedDBExportPayload> => {
-  const db = await openDB();
+  const db = await openSyncedDB();
   return new Promise((resolve, reject) => {
     const storeNames = [SP_STORE, SERIES_STORE, EP_STORE];
     const tx = db.transaction(storeNames, 'readonly');
@@ -565,7 +680,7 @@ export const importIndexedDBData = async (
   if (!isValidExportPayload(payload)) throw new Error('导入文件格式不正确');
 
   const mode = options?.mode || 'merge';
-  const db = await openDB();
+  const db = await openSyncedDB();
   const importedEpisodes = await Promise.all(
     ((payload.stores.episodes || []) as Episode[]).map(async (ep) => {
       try {
@@ -637,7 +752,7 @@ export const importIndexedDBData = async (
           createdAt: p.createdAt || Date.now(), lastModified: p.lastModified || Date.now(),
           stage: p.stage || 'script', rawScript: p.rawScript || '', targetDuration: p.targetDuration || '60s',
           language: p.language || '中文', visualStyle: p.visualStyle || '3d-animation',
-          shotGenerationModel: p.shotGenerationModel || 'gpt-5.2',
+          shotGenerationModel: p.shotGenerationModel || '',
           scriptData: p.scriptData
             ? {
                 ...p.scriptData,
@@ -658,7 +773,10 @@ export const importIndexedDBData = async (
       });
     }
 
-    tx.oncomplete = () => resolve({ projects: count, assets: (payload.stores.assetLibrary || []).length });
+    tx.oncomplete = () => {
+      scheduleServerPersist();
+      resolve({ projects: count, assets: (payload.stores.assetLibrary || []).length });
+    };
     tx.onerror = () => reject(tx.error);
   });
 };

@@ -9,6 +9,7 @@ const HOST = process.env.PROJECT_STORE_HOST || '0.0.0.0';
 const DATA_DIR = process.env.PROJECT_STORE_DATA_DIR || path.resolve(process.cwd(), 'data');
 const BACKUP_FILE = process.env.PROJECT_STORE_BACKUP_FILE || 'project-store-backup.json';
 const IMAGE_TASKS_FILE = process.env.PROJECT_STORE_IMAGE_TASKS_FILE || 'image-tasks.json';
+const MODEL_CONFIG_FILE = process.env.PROJECT_STORE_MODEL_CONFIG_FILE || 'model-config.json';
 const MAX_BODY_BYTES = Number.parseInt(process.env.PROJECT_STORE_MAX_BODY_BYTES || `${200 * 1024 * 1024}`, 10);
 const CORS_ORIGIN = process.env.PROJECT_STORE_CORS_ORIGIN || '*';
 const IMAGE_TASK_WORKERS = Math.max(1, Number.parseInt(process.env.PROJECT_STORE_IMAGE_TASK_WORKERS || '1', 10));
@@ -45,6 +46,7 @@ const IMAGE_FALLBACK_MODEL_ID = process.env.PROJECT_STORE_IMAGE_FALLBACK_MODEL_I
 
 const backupPath = path.join(DATA_DIR, BACKUP_FILE);
 const imageTasksPath = path.join(DATA_DIR, IMAGE_TASKS_FILE);
+const modelConfigPath = path.join(DATA_DIR, MODEL_CONFIG_FILE);
 const mediaRoot = path.join(DATA_DIR, 'media');
 
 const MEDIA_URL_PREFIX = '/api/project-store/media/';
@@ -97,12 +99,17 @@ const contentTypeFor = (filePath, bytes) => {
   if (bytes && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) return 'image/png';
   if (bytes && bytes[0] === 0xff && bytes[1] === 0xd8) return 'image/jpeg';
   if (bytes && bytes.subarray(0, 4).toString('ascii') === 'RIFF') return 'image/webp';
+  if (bytes && bytes.subarray(4, 8).toString('ascii') === 'ftyp') return 'video/mp4';
 
   const ext = path.extname(filePath).toLowerCase();
   if (ext === '.png') return 'image/png';
   if (ext === '.webp') return 'image/webp';
   if (ext === '.gif') return 'image/gif';
   if (ext === '.svg') return 'image/svg+xml';
+  if (ext === '.mp4') return 'video/mp4';
+  if (ext === '.webm') return 'video/webm';
+  if (ext === '.mov') return 'video/quicktime';
+  if (ext === '.ogv') return 'video/ogg';
   return 'image/jpeg';
 };
 
@@ -113,6 +120,10 @@ const extensionForMime = (mimeType) => {
   if (normalized === 'image/gif') return 'gif';
   if (normalized === 'image/svg+xml') return 'svg';
   if (normalized === 'image/jpeg' || normalized === 'image/jpg') return 'jpg';
+  if (normalized === 'video/mp4') return 'mp4';
+  if (normalized === 'video/webm') return 'webm';
+  if (normalized === 'video/quicktime') return 'mov';
+  if (normalized === 'video/ogg') return 'ogv';
   return 'bin';
 };
 
@@ -159,6 +170,98 @@ const writeBackup = async (payload) => {
   const tmpPath = `${backupPath}.${Date.now()}.tmp`;
   await writeFile(tmpPath, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
   await rename(tmpPath, backupPath);
+};
+
+const emptyModelConfig = () => ({
+  version: 1,
+  providers: [],
+  models: [],
+  activeModels: {
+    chat: '',
+    image: '',
+    video: '',
+    audio: '',
+  },
+  updatedAt: null,
+});
+
+const normalizeModelConfigPayload = (payload) => {
+  const source = payload && typeof payload === 'object' && payload.config && typeof payload.config === 'object'
+    ? payload.config
+    : payload;
+
+  if (!source || typeof source !== 'object') {
+    throw new Error('Invalid model config payload.');
+  }
+
+  const providers = Array.isArray(source.providers)
+    ? source.providers.map((provider) => ({
+        ...provider,
+        id: String(provider?.id || '').trim(),
+        name: String(provider?.name || provider?.id || '').trim(),
+        baseUrl: String(provider?.baseUrl || '').trim().replace(/\/+$/, ''),
+        apiKey: typeof provider?.apiKey === 'string' && provider.apiKey.trim()
+          ? provider.apiKey.trim()
+          : undefined,
+        isBuiltIn: false,
+        isDefault: Boolean(provider?.isDefault),
+      })).filter((provider) => provider.id && provider.baseUrl)
+    : [];
+
+  const models = Array.isArray(source.models)
+    ? source.models.map((model) => ({
+        ...model,
+        id: String(model?.id || '').trim(),
+        apiModel: String(model?.apiModel || model?.model || model?.id || '').trim(),
+        name: String(model?.name || model?.apiModel || model?.model || model?.id || '').trim(),
+        type: String(model?.type || '').trim(),
+        providerId: String(model?.providerId || '').trim(),
+        endpoint: String(model?.endpoint || '').trim(),
+        isBuiltIn: false,
+        isEnabled: model?.isEnabled !== false,
+      })).filter((model) => model.id && model.apiModel && model.type && model.providerId)
+    : [];
+
+  const activeModels = {
+    chat: String(source.activeModels?.chat || '').trim(),
+    image: String(source.activeModels?.image || '').trim(),
+    video: String(source.activeModels?.video || '').trim(),
+    audio: String(source.activeModels?.audio || '').trim(),
+  };
+
+  return {
+    version: 1,
+    providers,
+    models,
+    activeModels,
+    updatedAt: Date.now(),
+  };
+};
+
+const readModelConfig = async () => {
+  try {
+    return normalizeModelConfigPayload(JSON.parse(await readFile(modelConfigPath, 'utf8')));
+  } catch (error) {
+    if (error && error.code === 'ENOENT') {
+      return emptyModelConfig();
+    }
+    throw error;
+  }
+};
+
+const writeModelConfig = async (payload) => {
+  const config = normalizeModelConfigPayload(payload);
+  await mkdir(DATA_DIR, { recursive: true });
+  const tmpPath = `${modelConfigPath}.${Date.now()}.tmp`;
+  await writeFile(tmpPath, `${JSON.stringify(config, null, 2)}\n`, 'utf8');
+  await rename(tmpPath, modelConfigPath);
+  return config;
+};
+
+const modelsEndpointForBaseUrl = (baseUrl) => {
+  const clean = String(baseUrl || '').trim().replace(/\/+$/, '');
+  if (!clean) throw new Error('Missing API base URL.');
+  return clean.endsWith('/v1') ? `${clean}/models` : `${clean}/v1/models`;
 };
 
 const writeMediaBytes = async ({ bytes, mimeType, folder = 'persisted', filenamePrefix = 'image' }) => {
@@ -1224,8 +1327,76 @@ export const createProjectStoreHandler = () => async (req, res, next) => {
     if (pathname === '/api/project-store/model-config' && req.method === 'GET') {
       writeJson(res, 200, {
         ok: true,
-        config: buildImageModelConfig(),
+        config: await readModelConfig(),
       });
+      return;
+    }
+
+    if (pathname === '/api/project-store/model-config' && req.method === 'PUT') {
+      const body = await readBody(req);
+      let payload;
+      try {
+        payload = JSON.parse(body);
+      } catch {
+        writeJson(res, 400, { ok: false, message: 'Invalid JSON payload.' });
+        return;
+      }
+
+      try {
+        const config = await writeModelConfig(payload);
+        writeJson(res, 200, { ok: true, config });
+      } catch (error) {
+        writeJson(res, 400, {
+          ok: false,
+          message: error instanceof Error ? error.message : 'Invalid model config payload.',
+        });
+      }
+      return;
+    }
+
+    if (pathname === '/api/project-store/model-config/fetch-models' && req.method === 'POST') {
+      const body = await readBody(req);
+      let payload;
+      try {
+        payload = JSON.parse(body);
+      } catch {
+        writeJson(res, 400, { ok: false, message: 'Invalid JSON payload.' });
+        return;
+      }
+
+      try {
+        const baseUrl = String(payload?.baseUrl || '').trim();
+        const apiKey = String(payload?.apiKey || '').trim();
+        if (!baseUrl || !apiKey) throw new Error('API 地址和 API Key 都不能为空。');
+
+        const upstreamResponse = await fetch(modelsEndpointForBaseUrl(baseUrl), {
+          method: 'GET',
+          headers: {
+            Authorization: `Bearer ${apiKey}`,
+            Accept: 'application/json',
+          },
+        });
+        const text = await upstreamResponse.text();
+        let upstreamPayload = null;
+        try {
+          upstreamPayload = text ? JSON.parse(text) : null;
+        } catch {
+          upstreamPayload = text;
+        }
+
+        if (!upstreamResponse.ok) {
+          const detail = upstreamPayload?.error?.message || upstreamPayload?.message || `HTTP ${upstreamResponse.status}`;
+          writeJson(res, upstreamResponse.status, { ok: false, message: detail });
+          return;
+        }
+
+        writeJson(res, 200, { ok: true, payload: upstreamPayload });
+      } catch (error) {
+        writeJson(res, 400, {
+          ok: false,
+          message: error instanceof Error ? error.message : 'Failed to fetch models.',
+        });
+      }
       return;
     }
 

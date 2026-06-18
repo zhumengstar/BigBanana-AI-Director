@@ -159,22 +159,12 @@ const ModelManagerTab: React.FC<ModelManagerTabProps> = ({ onConfigChange }) => 
           <div className="flex-1">
             <h3 className="text-base font-bold text-[var(--text-primary)] mb-1 flex items-center gap-2">
               <Sparkles className="w-4 h-4 text-[var(--warning-text)]" />
-              推荐使用 BigBanana API
+              使用自定义模型服务
             </h3>
             <p className="text-xs text-[var(--text-tertiary)] mb-3 leading-relaxed">
-              支持 GPT-5.1、Gemini-3、Veo 3.1、Sora-2 等多种模型，稳定快速，价格优惠。
-              本开源项目由 BigBanana API 提供支持。
+              在模型配置中为聊天、图片、视频、音频分别填写 API 地址和 API Key，然后拉取模型并选择使用。
             </p>
             <div className="flex items-center gap-3">
-              <a 
-                href="https://api.antsk.cn" 
-                target="_blank" 
-                rel="noreferrer"
-                className="px-4 py-2 bg-[var(--btn-primary-bg)] text-[var(--btn-primary-text)] text-xs font-bold rounded-lg hover:bg-[var(--btn-primary-hover)] transition-colors inline-flex items-center gap-1.5"
-              >
-                立即购买
-                <ExternalLink className="w-3 h-3" />
-              </a>
               <a 
                 href={USER_MANUAL_URL}
                 target="_blank" 

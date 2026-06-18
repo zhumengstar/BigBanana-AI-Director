@@ -295,7 +295,7 @@ export const MODEL_OPTIONS = [
 export const DEFAULTS = {
   duration: '120s',  // 修改默认时长
   language: 'English',
-  model: 'gpt-5.2',
+  model: '',
   visualStyle: 'anime'
 };
 ```

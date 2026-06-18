@@ -7,9 +7,11 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { CheckCircle, Download, Loader2, Save, Server, Shield, AlertCircle } from 'lucide-react';
 import { ModelType } from '../../types/model';
 import {
+  fetchServerModelConfiguration,
   getActiveModel,
   getProviderById,
   getTypeProviderId,
+  saveServerModelConfiguration,
   saveTypeModelConfiguration,
 } from '../../services/modelRegistry';
 import { useAlert } from '../GlobalAlert';
@@ -38,14 +40,7 @@ const defaultEndpointByType: Record<ModelType, string> = {
   audio: '/v1/audio/speech',
 };
 
-const localStoragePrefix = 'bigbanana_model_config_draft';
-
 const normalizeBaseUrl = (value: string): string => value.trim().replace(/\/+$/, '');
-
-const modelsEndpointForBaseUrl = (baseUrl: string): string => {
-  const clean = normalizeBaseUrl(baseUrl);
-  return clean.endsWith('/v1') ? `${clean}/models` : `${clean}/v1/models`;
-};
 
 const parseModelList = (payload: any): RemoteModel[] => {
   const rawItems = Array.isArray(payload?.data)
@@ -74,10 +69,10 @@ const parseModelList = (payload: any): RemoteModel[] => {
 
 const ModelList: React.FC<ModelListProps> = ({ type, onRefresh }) => {
   const { showAlert } = useAlert();
+  const [registryVersion, setRegistryVersion] = useState(0);
   const providerId = getTypeProviderId(type);
   const activeModel = getActiveModel(type);
   const provider = activeModel ? getProviderById(activeModel.providerId) : getProviderById(providerId);
-  const draftKey = `${localStoragePrefix}_${type}`;
 
   const [baseUrl, setBaseUrl] = useState('');
   const [apiKey, setApiKey] = useState('');
@@ -88,28 +83,25 @@ const ModelList: React.FC<ModelListProps> = ({ type, onRefresh }) => {
   const [fetchMessage, setFetchMessage] = useState('');
 
   useEffect(() => {
-    let draft: any = null;
-    try {
-      draft = JSON.parse(localStorage.getItem(draftKey) || 'null');
-    } catch {
-      draft = null;
-    }
-
-    setBaseUrl(provider?.baseUrl || draft?.baseUrl || '');
-    setApiKey(provider?.apiKey || draft?.apiKey || '');
-    setModelName(activeModel?.apiModel || activeModel?.id?.split(':').slice(1).join(':') || draft?.modelName || '');
-    setEndpoint(activeModel?.endpoint || draft?.endpoint || defaultEndpointByType[type]);
-    setRemoteModels([]);
-    setFetchMessage('');
-  }, [type, provider?.baseUrl, provider?.apiKey, activeModel?.id, activeModel?.apiModel, activeModel?.endpoint, draftKey]);
+    let canceled = false;
+    fetchServerModelConfiguration()
+      .then(() => {
+        if (!canceled) setRegistryVersion(version => version + 1);
+      })
+      .catch(() => {});
+    return () => {
+      canceled = true;
+    };
+  }, []);
 
   useEffect(() => {
-    try {
-      localStorage.setItem(draftKey, JSON.stringify({ baseUrl, apiKey, modelName, endpoint }));
-    } catch {
-      // ignore local draft persistence failures
-    }
-  }, [draftKey, baseUrl, apiKey, modelName, endpoint]);
+    setBaseUrl(provider?.baseUrl || '');
+    setApiKey(provider?.apiKey || '');
+    setModelName(activeModel?.apiModel || activeModel?.id?.split(':').slice(1).join(':') || '');
+    setEndpoint(activeModel?.endpoint || defaultEndpointByType[type]);
+    setRemoteModels([]);
+    setFetchMessage('');
+  }, [type, provider?.baseUrl, provider?.apiKey, activeModel?.id, activeModel?.apiModel, activeModel?.endpoint, registryVersion]);
 
   const selectedModel = useMemo(
     () => remoteModels.find(model => model.id === modelName),
@@ -127,12 +119,12 @@ const ModelList: React.FC<ModelListProps> = ({ type, onRefresh }) => {
     setIsFetching(true);
     setFetchMessage('');
     try {
-      const response = await fetch(modelsEndpointForBaseUrl(cleanBaseUrl), {
-        method: 'GET',
+      const response = await fetch('/api/project-store/model-config/fetch-models', {
+        method: 'POST',
         headers: {
-          Authorization: `Bearer ${cleanApiKey}`,
-          Accept: 'application/json',
+          'Content-Type': 'application/json',
         },
+        body: JSON.stringify({ baseUrl: cleanBaseUrl, apiKey: cleanApiKey }),
       });
 
       if (!response.ok) {
@@ -147,7 +139,11 @@ const ModelList: React.FC<ModelListProps> = ({ type, onRefresh }) => {
         throw new Error(detail);
       }
 
-      const models = parseModelList(await response.json());
+      const result = await response.json();
+      if (!result?.ok) {
+        throw new Error(result?.message || '模型接口返回失败');
+      }
+      const models = parseModelList(result.payload);
       if (models.length === 0) {
         setRemoteModels([]);
         setFetchMessage('接口已返回，但没有解析到模型列表。可以手动输入模型名后保存。');
@@ -167,7 +163,7 @@ const ModelList: React.FC<ModelListProps> = ({ type, onRefresh }) => {
     }
   };
 
-  const handleSave = () => {
+  const handleSave = async () => {
     try {
       const model = saveTypeModelConfiguration({
         type,
@@ -177,6 +173,7 @@ const ModelList: React.FC<ModelListProps> = ({ type, onRefresh }) => {
         endpoint,
         displayName: selectedModel?.name || modelName,
       });
+      await saveServerModelConfiguration();
       onRefresh();
       showAlert(`已保存 ${model.name}`, { type: 'success' });
     } catch (error: any) {

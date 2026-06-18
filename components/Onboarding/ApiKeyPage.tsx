@@ -136,17 +136,7 @@ const ApiKeyPage: React.FC<ApiKeyPageProps> = ({
         )}
       </div>
 
-      {/* 获取 Key 链接 */}
       <div className="flex items-center gap-4 mb-8">
-        <a 
-          href="https://api.antsk.cn" 
-          target="_blank" 
-          rel="noreferrer" 
-          className="text-xs text-[var(--accent-text)] hover:underline inline-flex items-center gap-1"
-        >
-          立即购买 <ExternalLink className="w-3 h-3" />
-        </a>
-        <span className="text-[var(--text-muted)]">|</span>
         <a 
           href={USER_MANUAL_URL}
           target="_blank" 

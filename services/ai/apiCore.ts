@@ -65,9 +65,6 @@ export const setGlobalApiKey = (key: string) => {
   setRegistryApiKey(key);
 };
 
-/** Default API base URL fallback */
-const DEFAULT_API_BASE = 'https://api.antsk.cn';
-
 /** Resolve model by type and optional modelId */
 export const resolveModel = (type: 'chat' | 'image' | 'video', modelId?: string) => {
   if (modelId) {
@@ -139,9 +136,9 @@ export const getApiBase = (type: 'chat' | 'image' | 'video' = 'chat', modelId?: 
     if (resolvedModel) {
       return getApiBaseUrlForModel(resolvedModel.id);
     }
-    return DEFAULT_API_BASE;
+    return '';
   } catch {
-    return DEFAULT_API_BASE;
+    return '';
   }
 };
 
@@ -149,9 +146,9 @@ export const getApiBase = (type: 'chat' | 'image' | 'video' = 'chat', modelId?: 
 export const getActiveChatModelName = (): string => {
   try {
     const model = getActiveChatModel();
-    return model?.apiModel || model?.id || 'gpt-5.2';
+    return model?.apiModel || model?.id || '';
   } catch {
-    return 'gpt-5.2';
+    return '';
   }
 };
 
@@ -280,7 +277,7 @@ export const parseHttpError = async (response: Response): Promise<Error> => {
 /** Non-stream chat completion */
 export const chatCompletion = async (
   prompt: string,
-  model: string = 'gpt-5.2',
+  model: string = '',
   temperature: number = 0.7,
   maxTokens: number = 8192,
   responseFormat?: 'json_object',
@@ -357,7 +354,7 @@ export const chatCompletion = async (
 /** Streaming chat completion (SSE) */
 export const chatCompletionStream = async (
   prompt: string,
-  model: string = 'gpt-5.2',
+  model: string = '',
   temperature: number = 0.7,
   responseFormat: 'json_object' | undefined,
   timeout: number = 600000,

@@ -39,7 +39,7 @@ export const generateArtDirection = async (
   scenes: { location: string; time: string; atmosphere: string }[],
   visualStyle: string,
   language: string = '中文',
-  model: string = 'gpt-5.2',
+  model: string = '',
   abortSignal?: AbortSignal
 ): Promise<ArtDirection> => {
   console.log('🎨 generateArtDirection 调用 - 生成全局美术指导文档');
@@ -156,7 +156,7 @@ export const generateAllCharacterPrompts = async (
   genre: string,
   visualStyle: string,
   language: string = '中文',
-  model: string = 'gpt-5.2',
+  model: string = '',
   abortSignal?: AbortSignal
 ): Promise<{ visualPrompt: string; negativePrompt: string }[]> => {
   console.log(`🎭 generateAllCharacterPrompts 调用 - 批量生成 ${characters.length} 个角色的视觉提示词`);
@@ -290,7 +290,7 @@ export const generateVisualPrompts = async (
   type: 'character' | 'scene' | 'prop',
   data: Character | Scene | Prop,
   genre: string,
-  model: string = 'gpt-5.2',
+  model: string = '',
   visualStyle: string = 'live-action',
   language: string = '中文',
   artDirection?: ArtDirection,
@@ -738,10 +738,16 @@ export const generateImage = async (
 
   const activeImageModel = getActiveModel('image');
   const imageRoutingFamily = resolveImageModelRoutingFamily(activeImageModel);
-  const imageModelId = activeImageModel?.apiModel || activeImageModel?.id || 'gemini-3-pro-image-preview';
-  const imageModelEndpoint = activeImageModel?.endpoint || `/v1beta/models/${imageModelId}:generateContent`;
-  const apiKey = checkApiKey('image', activeImageModel?.id);
-  const apiBase = getApiBase('image', activeImageModel?.id);
+  if (!activeImageModel) {
+    throw new Error('请先在模型配置中选择图片生成模型。');
+  }
+  const imageModelId = activeImageModel.apiModel || activeImageModel.id;
+  if (!imageModelId) {
+    throw new Error('请先在模型配置中选择图片生成模型。');
+  }
+  const imageModelEndpoint = activeImageModel.endpoint || `/v1beta/models/${imageModelId}:generateContent`;
+  const apiKey = checkApiKey('image', activeImageModel.id);
+  const apiBase = getApiBase('image', activeImageModel.id);
 
   try {
     const normalizedUserPrompt = normalizePromptWhitespace(prompt);
@@ -1114,7 +1120,7 @@ export const generateCharacterTurnaroundPanels = async (
   visualStyle: string,
   artDirection?: ArtDirection,
   language: string = '中文',
-  model: string = 'gpt-5.2',
+  model: string = '',
   abortSignal?: AbortSignal
 ): Promise<CharacterTurnaroundPanel[]> => {
   console.log(`🎭 generateCharacterTurnaroundPanels - 为角色 ${character.name} 生成九宫格造型视角`);

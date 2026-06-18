@@ -39,7 +39,7 @@ const AddModelForm: React.FC<AddModelFormProps> = ({ type, onSave, onCancel }) =
   
   // 提供商配置
   const [providerMode, setProviderMode] = useState<'existing' | 'custom'>('existing');
-  const [selectedProviderId, setSelectedProviderId] = useState(existingProviders[0]?.id || 'antsk');
+  const [selectedProviderId, setSelectedProviderId] = useState(existingProviders[0]?.id || '');
   const [customProviderName, setCustomProviderName] = useState('');
   const [customProviderBaseUrl, setCustomProviderBaseUrl] = useState('');
   const [customProviderApiKey, setCustomProviderApiKey] = useState('');

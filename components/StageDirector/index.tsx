@@ -1114,7 +1114,7 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
     }
     
     const visualStyle = project.visualStyle || project.scriptData?.visualStyle || 'live-action';
-    const shotGenerationModel = project.shotGenerationModel || 'gpt-5.2';
+    const shotGenerationModel = project.shotGenerationModel || '';
     
     // 3. 调用AI拆分
     setIsSplittingShot(true);
@@ -1182,7 +1182,7 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
     }
     
     const visualStyle = project.visualStyle || project.scriptData?.visualStyle || 'live-action';
-    const shotGenerationModel = project.shotGenerationModel || 'gpt-5.2';
+    const shotGenerationModel = project.shotGenerationModel || '';
     
     // 3. 显示弹窗并设置生成状态（仅生成面板描述）
     setShowNineGrid(true);

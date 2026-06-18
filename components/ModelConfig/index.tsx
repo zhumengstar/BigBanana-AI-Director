@@ -109,7 +109,7 @@ const ModelConfigModal: React.FC<ModelConfigModalProps> = ({ isOpen, onClose }) 
         {/* 底部 */}
         <div className="px-6 py-4 border-t border-[var(--border-subtle)] bg-[var(--bg-sunken)] rounded-b-xl flex-shrink-0 flex items-center justify-between">
           <p className="text-[10px] text-[var(--text-muted)] font-mono">
-            配置仅保存在本地浏览器
+            配置保存到服务器，浏览器仅作为缓存
           </p>
           <button
             onClick={onClose}

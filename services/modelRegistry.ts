@@ -13,9 +13,6 @@ import {
   ImageModelDefinition,
   VideoModelDefinition,
   AudioModelDefinition,
-  BUILTIN_PROVIDERS,
-  ALL_BUILTIN_MODELS,
-  DEFAULT_ACTIVE_MODELS,
   AspectRatio,
   VideoDuration,
   DEFAULT_CHAT_PARAMS,
@@ -23,9 +20,16 @@ import {
   DEFAULT_VIDEO_PARAMS_SORA,
 } from '../types/model';
 
-// localStorage 键名
+// 浏览器运行缓存键名；服务端 model-config.json 是权威来源。
 const STORAGE_KEY = 'bigbanana_model_registry';
-const API_KEY_STORAGE_KEY = 'antsk_api_key';
+const LEGACY_API_KEY_STORAGE_KEY = 'antsk_api_key';
+
+const EMPTY_ACTIVE_MODELS: ActiveModels = {
+  chat: '',
+  image: '',
+  video: '',
+  audio: '',
+};
 
 // 规范化 URL（去尾部斜杠、转小写）用于去重
 const normalizeBaseUrl = (url: string): string => url.trim().replace(/\/+$/, '').toLowerCase();
@@ -48,6 +52,30 @@ const MODEL_TYPE_PROVIDER_IDS: Record<ModelType, string> = {
 // 运行时状态缓存
 let registryState: ModelRegistryState | null = null;
 
+const normalizeRegistryState = (value: Partial<ModelRegistryState> | null | undefined): ModelRegistryState => ({
+  providers: Array.isArray(value?.providers)
+    ? value.providers.filter((provider): provider is ModelProvider => Boolean(provider && provider.id && provider.baseUrl)).map(provider => ({
+        ...provider,
+        isBuiltIn: false,
+      }))
+    : [],
+  models: Array.isArray(value?.models)
+    ? value.models.filter((model): model is ModelDefinition => Boolean(model && model.id && model.type && model.providerId)).map(model => ({
+        ...model,
+        apiModel: model.apiModel || model.id,
+        isBuiltIn: false,
+        isEnabled: model.isEnabled !== false,
+      }))
+    : [],
+  activeModels: {
+    ...EMPTY_ACTIVE_MODELS,
+    ...(value?.activeModels || {}),
+  },
+  globalApiKey: undefined,
+});
+
+const modelConfigEndpoint = '/api/project-store/model-config';
+
 // ============================================
 // 状态管理
 // ============================================
@@ -56,9 +84,9 @@ let registryState: ModelRegistryState | null = null;
  * 获取默认状态
  */
 const getDefaultState = (): ModelRegistryState => ({
-  providers: [...BUILTIN_PROVIDERS],
-  models: [...ALL_BUILTIN_MODELS],
-  activeModels: { ...DEFAULT_ACTIVE_MODELS },
+  providers: [],
+  models: [],
+  activeModels: { ...EMPTY_ACTIVE_MODELS },
   globalApiKey: undefined,
 });
 
@@ -88,7 +116,7 @@ export const loadRegistry = (): ModelRegistryState => {
       parsed.providers = Array.isArray(parsed.providers) ? parsed.providers : [];
       parsed.models = Array.isArray(parsed.models) ? parsed.models : [];
       parsed.activeModels = {
-        ...DEFAULT_ACTIVE_MODELS,
+        ...EMPTY_ACTIVE_MODELS,
         ...(parsed.activeModels || {}),
       };
       delete (parsed as any).globalApiKey;
@@ -127,8 +155,8 @@ export const loadRegistry = (): ModelRegistryState => {
         activeModelMigrated = true;
       }
       
-      if (localStorage.getItem(API_KEY_STORAGE_KEY)) {
-        localStorage.removeItem(API_KEY_STORAGE_KEY);
+      if (localStorage.getItem(LEGACY_API_KEY_STORAGE_KEY)) {
+        localStorage.removeItem(LEGACY_API_KEY_STORAGE_KEY);
       }
       
       registryState = parsed;
@@ -162,11 +190,58 @@ export const loadRegistry = (): ModelRegistryState => {
  */
 export const saveRegistry = (state: ModelRegistryState): void => {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-    registryState = state;
+    const normalized = normalizeRegistryState(state);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(normalized));
+    registryState = normalized;
   } catch (e) {
     console.error('保存模型注册中心失败:', e);
   }
+};
+
+/**
+ * 从服务端加载模型配置。服务端是权威来源，localStorage 只作为运行缓存。
+ */
+export const fetchServerModelConfiguration = async (): Promise<ModelRegistryState | null> => {
+  try {
+    const response = await fetch(modelConfigEndpoint, { cache: 'no-store' });
+    if (!response.ok) return null;
+    const result = await response.json();
+    if (!result?.ok || !result?.config) return null;
+
+    const normalized = normalizeRegistryState(result.config);
+    saveRegistry(normalized);
+    return normalized;
+  } catch (error) {
+    console.warn('加载服务端模型配置失败，继续使用浏览器缓存。', error);
+    return null;
+  }
+};
+
+/**
+ * 将当前模型配置保存到服务端，并同步浏览器缓存。
+ */
+export const saveServerModelConfiguration = async (state: ModelRegistryState = loadRegistry()): Promise<ModelRegistryState> => {
+  const normalized = normalizeRegistryState(state);
+  const response = await fetch(modelConfigEndpoint, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ config: normalized }),
+  });
+
+  let result: any = null;
+  try {
+    result = await response.json();
+  } catch {
+    result = null;
+  }
+
+  if (!response.ok || !result?.ok || !result?.config) {
+    throw new Error(result?.message || `服务端模型配置保存失败：HTTP ${response.status}`);
+  }
+
+  const saved = normalizeRegistryState(result.config);
+  saveRegistry(saved);
+  return saved;
 };
 
 /**
@@ -477,7 +552,7 @@ export const getGlobalApiKey = (): string | undefined => {
 export const setGlobalApiKey = (apiKey: string): void => {
   const state = loadRegistry();
   state.globalApiKey = undefined;
-  localStorage.removeItem(API_KEY_STORAGE_KEY);
+  localStorage.removeItem(LEGACY_API_KEY_STORAGE_KEY);
   saveRegistry(state);
 };
 

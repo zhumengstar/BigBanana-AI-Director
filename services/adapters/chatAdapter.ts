@@ -177,7 +177,10 @@ export const callChatApi = async (
  */
 export const verifyApiKey = async (apiKey: string, baseUrl?: string): Promise<{ success: boolean; message: string }> => {
   try {
-    const url = baseUrl || 'https://api.antsk.cn';
+    const url = baseUrl?.replace(/\/+$/, '');
+    if (!url) {
+      return { success: false, message: '请先配置 API 地址' };
+    }
     
     const response = await fetch(`${url}/v1/chat/completions`, {
       method: 'POST',

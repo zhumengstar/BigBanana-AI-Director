@@ -14,41 +14,40 @@ import {
   VideoModelConfig
 } from '../types';
 
-// localStorage 键名
+// 兼容缓存键名：服务端配置是权威来源，浏览器只作为旧组件运行缓存。
 const STORAGE_KEY = 'bigbanana_model_config';
+const SERVER_MODEL_CONFIG_ENDPOINT = '/api/project-store/model-config';
 
-// 默认提供商 - api.antsk.cn
 const DEFAULT_PROVIDER: ModelProvider = {
-  id: 'antsk',
-  name: 'BigBanana API (api.antsk.cn)',
-  baseUrl: 'https://api.antsk.cn',
-  isDefault: true,
-  isBuiltIn: true
+  id: '',
+  name: '',
+  baseUrl: '',
+  isDefault: false,
+  isBuiltIn: false
 };
 
-// 默认模型配置
 const DEFAULT_CONFIG: ModelConfig = {
   chatModel: {
-    providerId: 'antsk',
-    modelName: 'gpt-5.2',
+    providerId: '',
+    modelName: '',
     endpoint: '/v1/chat/completions'
   },
   imageModel: {
-    providerId: 'antsk',
-    modelName: 'gemini-3-pro-image-preview',
-    endpoint: '/v1beta/models/gemini-3-pro-image-preview:generateContent'
+    providerId: '',
+    modelName: '',
+    endpoint: '/v1/images/generations'
   },
   videoModel: {
-    providerId: 'antsk',
+    providerId: '',
     type: 'veo',
-    modelName: 'veo',
-    endpoint: '/v1/chat/completions'
+    modelName: '',
+    endpoint: '/v1/videos'
   }
 };
 
 // 默认状态
 const DEFAULT_STATE: ModelManagerState = {
-  providers: [DEFAULT_PROVIDER],
+  providers: [],
   currentConfig: DEFAULT_CONFIG,
   defaultAspectRatio: '16:9',
   defaultVideoDuration: 8
@@ -57,8 +56,76 @@ const DEFAULT_STATE: ModelManagerState = {
 // 运行时状态缓存
 let runtimeState: ModelManagerState | null = null;
 
+const legacyModelId = (type: 'chat' | 'image' | 'video', modelName: string): string => (
+  modelName ? `${type}:${modelName}` : ''
+);
+
+const legacyStateToServerConfig = (state: ModelManagerState) => {
+  const providers = (state.providers || [])
+    .filter(provider => provider.id && provider.baseUrl)
+    .map(provider => ({ ...provider, isBuiltIn: false }));
+  const models = [
+    {
+      id: legacyModelId('chat', state.currentConfig.chatModel.modelName),
+      apiModel: state.currentConfig.chatModel.modelName,
+      name: state.currentConfig.chatModel.modelName,
+      type: 'chat',
+      providerId: state.currentConfig.chatModel.providerId,
+      endpoint: state.currentConfig.chatModel.endpoint || '/v1/chat/completions',
+      isBuiltIn: false,
+      isEnabled: true,
+    },
+    {
+      id: legacyModelId('image', state.currentConfig.imageModel.modelName),
+      apiModel: state.currentConfig.imageModel.modelName,
+      name: state.currentConfig.imageModel.modelName,
+      type: 'image',
+      providerId: state.currentConfig.imageModel.providerId,
+      endpoint: state.currentConfig.imageModel.endpoint || '/v1/images/generations',
+      isBuiltIn: false,
+      isEnabled: true,
+    },
+    {
+      id: legacyModelId('video', state.currentConfig.videoModel.modelName),
+      apiModel: state.currentConfig.videoModel.modelName,
+      name: state.currentConfig.videoModel.modelName,
+      type: 'video',
+      providerId: state.currentConfig.videoModel.providerId,
+      endpoint: state.currentConfig.videoModel.endpoint || '/v1/videos',
+      isBuiltIn: false,
+      isEnabled: true,
+    },
+  ].filter(model => model.id && model.providerId);
+
+  return {
+    version: 1,
+    providers,
+    models,
+    activeModels: {
+      chat: legacyModelId('chat', state.currentConfig.chatModel.modelName),
+      image: legacyModelId('image', state.currentConfig.imageModel.modelName),
+      video: legacyModelId('video', state.currentConfig.videoModel.modelName),
+      audio: '',
+    },
+  };
+};
+
+const saveLegacyConfigToServer = (state: ModelManagerState): void => {
+  try {
+    void fetch(SERVER_MODEL_CONFIG_ENDPOINT, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ config: legacyStateToServerConfig(state) }),
+    }).catch(error => {
+      console.warn('旧模型配置保存到服务端失败，已保留浏览器缓存。', error);
+    });
+  } catch {
+    // ignore
+  }
+};
+
 /**
- * 从 localStorage 加载配置
+ * 从浏览器运行缓存加载旧配置；服务端模型配置是权威来源。
  */
 export const loadModelConfig = (): ModelManagerState => {
   if (runtimeState) {
@@ -69,11 +136,7 @@ export const loadModelConfig = (): ModelManagerState => {
     const stored = localStorage.getItem(STORAGE_KEY);
     if (stored) {
       const parsed = JSON.parse(stored) as ModelManagerState;
-      // 确保默认提供商始终存在
-      const hasDefaultProvider = parsed.providers.some(p => p.id === 'antsk');
-      if (!hasDefaultProvider) {
-        parsed.providers.unshift(DEFAULT_PROVIDER);
-      }
+      parsed.providers = (parsed.providers || []).filter(p => !p.isBuiltIn);
       // 迁移旧的 Veo 模型名为统一的 veo
       const videoModelName = parsed.currentConfig?.videoModel?.modelName || '';
       if (
@@ -83,9 +146,9 @@ export const loadModelConfig = (): ModelManagerState => {
         videoModelName.startsWith('veo_3_1_') ||
         videoModelName.startsWith('veo_3_0_r2v')
       ) {
-        parsed.currentConfig.videoModel.modelName = 'veo';
+        parsed.currentConfig.videoModel.modelName = '';
         parsed.currentConfig.videoModel.type = 'veo';
-        parsed.currentConfig.videoModel.endpoint = '/v1/chat/completions';
+        parsed.currentConfig.videoModel.endpoint = '/v1/videos';
         // 迁移后立即回写，避免重复执行
         try { localStorage.setItem(STORAGE_KEY, JSON.stringify(parsed)); } catch (e) { /* ignore */ }
       }
@@ -96,17 +159,25 @@ export const loadModelConfig = (): ModelManagerState => {
     console.error('加载模型配置失败:', e);
   }
 
-  runtimeState = { ...DEFAULT_STATE };
+  runtimeState = {
+    ...DEFAULT_STATE,
+    currentConfig: {
+      chatModel: { ...DEFAULT_CONFIG.chatModel },
+      imageModel: { ...DEFAULT_CONFIG.imageModel },
+      videoModel: { ...DEFAULT_CONFIG.videoModel },
+    },
+  };
   return runtimeState;
 };
 
 /**
- * 保存配置到 localStorage
+ * 保存旧配置缓存，并同步迁移到服务端模型配置。
  */
 export const saveModelConfig = (state: ModelManagerState): void => {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
     runtimeState = state;
+    saveLegacyConfigToServer(state);
   } catch (e) {
     console.error('保存模型配置失败:', e);
   }
@@ -189,13 +260,13 @@ export const deleteProvider = (id: string): boolean => {
   
   // 如果删除的是当前使用的提供商，切换回默认
   if (state.currentConfig.chatModel.providerId === id) {
-    state.currentConfig.chatModel.providerId = 'antsk';
+    state.currentConfig.chatModel.providerId = '';
   }
   if (state.currentConfig.imageModel.providerId === id) {
-    state.currentConfig.imageModel.providerId = 'antsk';
+    state.currentConfig.imageModel.providerId = '';
   }
   if (state.currentConfig.videoModel.providerId === id) {
-    state.currentConfig.videoModel.providerId = 'antsk';
+    state.currentConfig.videoModel.providerId = '';
   }
   
   saveModelConfig(state);
@@ -254,8 +325,7 @@ export const getImageApiUrl = (): string => {
   const config = getCurrentConfig();
   const provider = getProviderById(config.imageModel.providerId) || getDefaultProvider();
   const baseUrl = provider.baseUrl.replace(/\/+$/, '');
-  const modelName = config.imageModel.modelName || 'gemini-3-pro-image-preview';
-  const endpoint = config.imageModel.endpoint || `/v1beta/models/${modelName}:generateContent`;
+  const endpoint = config.imageModel.endpoint || '/v1/images/generations';
   return `${baseUrl}${endpoint}`;
 };
 
@@ -292,7 +362,7 @@ export const getApiBaseUrl = (type: 'chat' | 'image' | 'video' = 'chat'): string
       providerId = config.videoModel.providerId;
       break;
     default:
-      providerId = 'antsk';
+      providerId = '';
   }
   
   const provider = getProviderById(providerId) || getDefaultProvider();
@@ -385,24 +455,14 @@ export const resetToDefault = (): void => {
 /**
  * 预定义的对话模型列表
  */
-export const AVAILABLE_CHAT_MODELS = [
-  { name: 'GPT-5.2', value: 'gpt-5.2', description: '最新版本，推荐使用' },
-  { name: 'GPT-5.1', value: 'gpt-5.1', description: '稳定版本' },
-  { name: 'GPT-4.1', value: 'gpt-41', description: '稳定版本' },
-];
+export const AVAILABLE_CHAT_MODELS: Array<{ name: string; value: string; description: string }> = [];
 
 /**
  * 预定义的画图模型列表
  */
-export const AVAILABLE_IMAGE_MODELS = [
-  { name: 'Gemini 3 Pro Image', value: 'gemini-3-pro-image-preview', description: '高质量图片生成' },
-];
+export const AVAILABLE_IMAGE_MODELS: Array<{ name: string; value: string; description: string }> = [];
 
 /**
  * 预定义的视频模型列表
  */
-export const AVAILABLE_VIDEO_MODELS = [
-  { name: 'Veo 3.1（自动）', value: 'veo', type: 'veo' as const, description: '生成时自动按横竖屏与是否带图选择模型' },
-  { name: 'Veo 3.1 Fast', value: 'veo_3_1-fast', type: 'sora' as const, description: '异步模式，支持横/竖屏，固定 8 秒' },
-  { name: 'Sora-2', value: 'sora-2', type: 'sora' as const, description: '异步模式，支持 4/8/12 秒' },
-];
+export const AVAILABLE_VIDEO_MODELS: Array<{ name: string; value: string; type: 'sora' | 'veo'; description: string }> = [];
