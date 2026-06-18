@@ -10,9 +10,27 @@
   var state = {
     ok: true,
     mode: 'server-async-image-tasks',
-    tasks: {}
+    tasks: {},
+    diagnostics: []
   };
   window.__BIGBANANA_ASYNC_IMAGE_TASKS__ = state;
+
+  var recordDiagnostic = function (event, details) {
+    var item = Object.assign({
+      event: event,
+      at: new Date().toISOString()
+    }, details || {});
+    state.diagnostics.push(item);
+    if (state.diagnostics.length > 30) {
+      state.diagnostics.splice(0, state.diagnostics.length - 30);
+    }
+    state.lastDiagnostic = item;
+    try {
+      console.info('[BigBanana async image]', event, details || {});
+    } catch (error) {
+      // Console logging must never affect image generation.
+    }
+  };
 
   var loadStoredTasks = function () {
     try {
@@ -59,6 +77,66 @@
     return output;
   };
 
+  var parseJson = function (text) {
+    try {
+      return JSON.parse(text || '{}') || {};
+    } catch (error) {
+      return {};
+    }
+  };
+
+  var extractPromptFromGeminiBody = function (bodyText) {
+    var body = parseJson(bodyText);
+    if (typeof body.prompt === 'string' && body.prompt.trim()) return body.prompt.trim();
+
+    var texts = [];
+    (body.contents || []).forEach(function (content) {
+      (content.parts || []).forEach(function (part) {
+        if (typeof part.text === 'string' && part.text.trim()) {
+          texts.push(part.text.trim());
+        }
+      });
+    });
+
+    return texts.join('\n\n').trim();
+  };
+
+  var getActiveImageModel = function () {
+    try {
+      var registry = window.BIGBANANA_MODEL_REGISTRY_CONFIG;
+      if (!registry) {
+        registry = JSON.parse(window.localStorage.getItem('bigbanana_model_registry') || '{}');
+      }
+      var activeImageId = registry && registry.activeModels && registry.activeModels.image;
+      var models = registry && registry.models && registry.models.image;
+      if (activeImageId && Array.isArray(models)) {
+        return models.find(function (model) {
+          return model && model.id === activeImageId;
+        }) || null;
+      }
+    } catch (error) {
+      return null;
+    }
+    return null;
+  };
+
+  var buildOpenAiImageBody = function (bodyText) {
+    var originalBody = parseJson(bodyText);
+    var activeModel = getActiveImageModel() || {};
+    var params = activeModel.params || {};
+    var prompt = extractPromptFromGeminiBody(bodyText) || originalBody.prompt || '';
+    var output = {
+      model: activeModel.apiModel || originalBody.model || activeModel.id || 'gpt-image-2',
+      prompt: prompt,
+      n: Number(originalBody.n || params.n || 1) || 1,
+      size: originalBody.size || params.size || '1024x1024'
+    };
+
+    if (originalBody.quality || params.quality) output.quality = originalBody.quality || params.quality;
+    if (originalBody.background || params.background) output.background = originalBody.background || params.background;
+    return JSON.stringify(output);
+  };
+
   var isImageGenerationRequest = function (url, method, bodyText) {
     if (method !== 'POST') return null;
     if (url.indexOf(TASK_ENDPOINT) >= 0) return null;
@@ -70,29 +148,51 @@
       return null;
     }
 
-    if (parsed.pathname.indexOf('/v1/images/generations') >= 0) {
-      return 'openai-image';
+    var path = parsed.pathname.toLowerCase();
+    var bodyLower = String(bodyText || '').toLowerCase();
+
+    if (path.indexOf('/v1/images/generations') >= 0) {
+      return {
+        upstreamFormat: 'openai-image',
+        clientFormat: 'gemini-image',
+        transformBody: buildOpenAiImageBody,
+        reason: 'openai-compatible-images-endpoint'
+      };
     }
 
-    if (parsed.pathname.indexOf(':generateContent') >= 0 && /"IMAGE"/.test(bodyText || '')) {
-      return 'gemini-image';
+    if (path.indexOf(':generatecontent') >= 0 && bodyLower.indexOf('"image"') >= 0) {
+      return {
+        upstreamFormat: 'gemini-image',
+        clientFormat: 'gemini-image',
+        transformBody: null,
+        reason: 'gemini-generate-content-image'
+      };
     }
 
     return null;
   };
 
-  var createTask = async function (request, bodyText, responseFormat) {
+  var createTask = async function (request, bodyText, route) {
+    var upstreamBody = route.transformBody ? route.transformBody(bodyText) : bodyText;
+    var upstreamPublicUrl = request.url;
+    try {
+      var parsedUpstreamUrl = new URL(request.url, window.location.href);
+      upstreamPublicUrl = parsedUpstreamUrl.pathname + (parsedUpstreamUrl.search || '');
+    } catch (error) {
+      // Keep the original request URL if URL parsing fails.
+    }
     var response = await originalFetch(TASK_ENDPOINT, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        responseFormat: responseFormat,
+        responseFormat: route.upstreamFormat,
+        upstreamPublicUrl: upstreamPublicUrl,
         upstream: {
-          url: request.url,
+          url: upstreamPublicUrl,
           method: request.method,
           headers: headersToObject(request.headers),
-          body: bodyText,
-          responseFormat: responseFormat
+          body: upstreamBody,
+          responseFormat: route.upstreamFormat
         }
       })
     });
@@ -108,6 +208,11 @@
 
     rememberTask(result.task || { id: result.taskId, status: 'queued' });
     state.lastCreatedAt = Date.now();
+    state.lastTaskRoute = {
+      upstreamFormat: route.upstreamFormat,
+      clientFormat: route.clientFormat,
+      reason: route.reason
+    };
     return result.taskId;
   };
 
@@ -268,14 +373,27 @@
       }
     }
 
-    var responseFormat = isImageGenerationRequest(request.url, method, bodyText);
-    if (!responseFormat) {
+    var route = isImageGenerationRequest(request.url, method, bodyText);
+    if (!route) {
       return originalFetch(input, init);
     }
 
-    var taskId = await createTask(request, bodyText, responseFormat);
-    var task = await pollTask(taskId, null);
-    return responseFromTask(task, responseFormat);
+    recordDiagnostic('intercept', {
+      url: request.url,
+      upstreamFormat: route.upstreamFormat,
+      clientFormat: route.clientFormat,
+      reason: route.reason
+    });
+
+    try {
+      var taskId = await createTask(request, bodyText, route);
+      var task = await pollTask(taskId, null);
+      return responseFromTask(task, route.clientFormat);
+    } catch (error) {
+      state.lastError = error && error.message ? error.message : String(error);
+      recordDiagnostic('failed', { message: state.lastError });
+      throw error;
+    }
   };
 
   resumeStoredTasks();

@@ -180,11 +180,36 @@ const nowIso = () => new Date().toISOString();
 
 const taskId = () => `imgtask_${Date.now().toString(36)}_${crypto.randomBytes(4).toString('hex')}`;
 
+const sanitizeHeadersForDisk = (headers) => {
+  const blocked = new Set([
+    'authorization',
+    'proxy-authorization',
+    'x-api-key',
+    'api-key',
+  ]);
+  const output = {};
+  Object.entries(headers || {}).forEach(([key, value]) => {
+    if (blocked.has(String(key).toLowerCase())) return;
+    output[key] = value;
+  });
+  return output;
+};
+
+const taskDiskView = (task) => ({
+  ...task,
+  upstream: task.upstream
+    ? {
+        ...task.upstream,
+        headers: sanitizeHeadersForDisk(task.upstream.headers),
+      }
+    : task.upstream,
+});
+
 const persistImageTasks = () => {
   const payload = {
     schemaVersion: 1,
     updatedAt: Date.now(),
-    tasks: Array.from(imageTasks.values()),
+    tasks: Array.from(imageTasks.values()).map(taskDiskView),
   };
 
   imageTasksSaveChain = imageTasksSaveChain.then(async () => {
@@ -318,6 +343,11 @@ const runImageTask = async (task) => {
   task.startedAt = Date.now();
   task.updatedAt = Date.now();
   await persistImageTasks();
+  console.log('[project-store] image task running', {
+    id: task.id,
+    responseFormat: task.responseFormat || null,
+    upstreamUrl: task.upstreamPublicUrl || task.upstream.url,
+  });
 
   try {
     const response = await fetch(task.upstream.url, {
@@ -363,11 +393,22 @@ const runImageTask = async (task) => {
     task.bytes = mediaResult.bytes;
     task.responseFormat = task.responseFormat || extracted.responseFormat;
     task.error = null;
+    console.log('[project-store] image task completed', {
+      id: task.id,
+      imageUrl: task.imageUrl,
+      mimeType: task.mimeType,
+      bytes: task.bytes,
+    });
   } catch (error) {
     task.status = 'failed';
     task.failedAt = Date.now();
     task.updatedAt = Date.now();
     task.error = error instanceof Error ? error.message : 'Image task failed.';
+    console.error('[project-store] image task failed', {
+      id: task.id,
+      upstreamUrl: task.upstreamPublicUrl || task.upstream.url,
+      error: task.error,
+    });
   } finally {
     await persistImageTasks();
   }
@@ -439,6 +480,11 @@ const createPersistentImageTask = async ({ responseFormat, upstreamPublicUrl, up
 
   imageTasks.set(id, task);
   await persistImageTasks();
+  console.log('[project-store] image task queued', {
+    id: task.id,
+    responseFormat: task.responseFormat || null,
+    upstreamUrl: task.upstreamPublicUrl || task.upstream.url,
+  });
   enqueueImageTask(task);
   return task;
 };

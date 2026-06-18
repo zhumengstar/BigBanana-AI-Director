@@ -939,6 +939,21 @@ NEGATIVE PROMPT (strictly avoid): ${compactNegativePrompt}`;
       };
     }
 
+    const imageModelParams = (activeImageModel?.params || {}) as any;
+    const isOpenAiImageEndpoint =
+      imageModelEndpoint.includes('/v1/images/generations') ||
+      imageModelParams.apiFormat === 'openai';
+    const openAiImageRequestBody = isOpenAiImageEndpoint
+      ? {
+          model: imageModelId,
+          prompt: finalPrompt,
+          n: 1,
+          size: imageModelParams.aspectRatioSizeMap?.[aspectRatio] || imageModelParams.size || '1024x1024',
+          ...(imageModelParams.quality ? { quality: imageModelParams.quality } : {}),
+          ...(imageModelParams.background ? { background: imageModelParams.background } : {}),
+        }
+      : null;
+
     const response = await retryOperation(async () => {
       const res = await fetch(`${apiBase}${imageModelEndpoint}`, {
         method: 'POST',
@@ -947,7 +962,7 @@ NEGATIVE PROMPT (strictly avoid): ${compactNegativePrompt}`;
           'Authorization': `Bearer ${apiKey}`,
           'Accept': '*/*'
         },
-        body: JSON.stringify(requestBody)
+        body: JSON.stringify(openAiImageRequestBody || requestBody)
       });
 
       if (!res.ok) {
@@ -959,6 +974,37 @@ NEGATIVE PROMPT (strictly avoid): ${compactNegativePrompt}`;
 
       return await res.json();
     });
+
+    const openAiImageData = Array.isArray(response.data) ? response.data[0] : null;
+    if (openAiImageData?.b64_json) {
+      const result = `data:image/png;base64,${openAiImageData.b64_json}`;
+
+      addRenderLogWithTokens({
+        type: 'keyframe',
+        resourceId: 'image-' + Date.now(),
+        resourceName: prompt.substring(0, 50) + '...',
+        status: 'success',
+        model: imageModelId,
+        prompt: prompt,
+        duration: Date.now() - startTime
+      });
+
+      return result;
+    }
+
+    if (openAiImageData?.url) {
+      addRenderLogWithTokens({
+        type: 'keyframe',
+        resourceId: 'image-' + Date.now(),
+        resourceName: prompt.substring(0, 50) + '...',
+        status: 'success',
+        model: imageModelId,
+        prompt: prompt,
+        duration: Date.now() - startTime
+      });
+
+      return openAiImageData.url;
+    }
 
     const candidates = response.candidates || [];
     if (candidates.length > 0 && candidates[0].content && candidates[0].content.parts) {
