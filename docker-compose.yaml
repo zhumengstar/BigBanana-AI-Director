@@ -4,48 +4,19 @@ services:
     image: registry.cn-hangzhou.aliyuncs.com/tree456/bigbanana-ai-director:web-3.3.0
     container_name: bigbanana-ai-director-web
     ports:
-      - "127.0.0.1:3005:80"
+      - "0.0.0.0:3005:80"
     depends_on:
-      - media-proxy
-      - new-api-proxy
+      - backend
       - cutos-api
     volumes:
       - ./web-hotpatch/index.html:/usr/share/nginx/html/index.html:ro
       - ./web-hotpatch/bb-runtime-config.js:/usr/share/nginx/html/bb-runtime-config.js:ro
+      - ./web-hotpatch/bb-sidebar-toggle.js:/usr/share/nginx/html/bb-sidebar-toggle.js:ro
+      - ./web-hotpatch/bb-project-store-sync.js:/usr/share/nginx/html/bb-project-store-sync.js:ro
+      - ./web-hotpatch/bb-async-image-tasks.js:/usr/share/nginx/html/bb-async-image-tasks.js:ro
       - ./web-hotpatch/assets/index-jpMSpFue.js:/usr/share/nginx/html/assets/index-jpMSpFue.js:ro
       - ./web-hotpatch/assets/cutos-editor-lIBo6A3F.js:/usr/share/nginx/html/assets/cutos-editor-lIBo6A3F.js:ro
       - ./web-hotpatch/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
-    restart: unless-stopped
-
-  media-proxy:
-    platform: linux/amd64
-    image: registry.cn-hangzhou.aliyuncs.com/tree456/bigbanana-ai-director:media-3.3.0
-    container_name: bigbanana-ai-director-media-proxy
-    environment:
-      MEDIA_PROXY_PORT: "8787"
-      MEDIA_PROXY_ALLOWED_HOSTS: "volces.com,amazonaws.com,amazonaws.com.cn,aliyuncs.com,aliyuncs.com.cn,tree456.com,muling.store,ai.muling.store,api.antsk.cn"
-      MEDIA_PROXY_ALLOWED_PROTOCOLS: "https"
-      MEDIA_PROXY_TIMEOUT_MS: "120000"
-      MEDIA_PROXY_MAX_URL_LENGTH: "4096"
-      MEDIA_PROXY_CORS_ORIGIN: "*"
-    expose:
-      - "8787"
-    restart: unless-stopped
-
-  new-api-proxy:
-    platform: linux/amd64
-    image: registry.cn-hangzhou.aliyuncs.com/tree456/bigbanana-ai-director:newapi-3.3.0
-    container_name: bigbanana-ai-director-new-api-proxy
-    environment:
-      NEW_API_PROXY_PORT: "8788"
-      NEW_API_ALLOWED_HOSTS: "ai.muling.store,api.antsk.cn"
-      NEW_API_ALLOW_PRIVATE_HOSTS: "false"
-      NEW_API_DEFAULT_ENDPOINT: "https://ai.muling.store"
-    volumes:
-      - ./server/newApiProxyCore.mjs:/app/server/newApiProxyCore.mjs:ro
-      - ./server/newApiProxyServer.mjs:/app/server/newApiProxyServer.mjs:ro
-    expose:
-      - "8788"
     restart: unless-stopped
 
   cutos-api:
@@ -57,4 +28,34 @@ services:
       DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:-}
     expose:
       - "8789"
+    restart: unless-stopped
+
+  backend:
+    platform: linux/amd64
+    image: registry.cn-hangzhou.aliyuncs.com/tree456/bigbanana-ai-director:media-3.3.0
+    container_name: bigbanana-ai-director-backend
+    working_dir: /app
+    command: ["node", "/app/server/backendServer.mjs"]
+    environment:
+      BIGBANANA_BACKEND_PORT: "8790"
+      MEDIA_PROXY_ALLOWED_HOSTS: "volces.com,amazonaws.com,amazonaws.com.cn,aliyuncs.com,aliyuncs.com.cn,tree456.com,muling.store,ai.muling.store,api.antsk.cn"
+      MEDIA_PROXY_ALLOWED_PROTOCOLS: "https"
+      MEDIA_PROXY_TIMEOUT_MS: "120000"
+      MEDIA_PROXY_MAX_URL_LENGTH: "4096"
+      MEDIA_PROXY_CORS_ORIGIN: "*"
+      NEW_API_ALLOWED_HOSTS: "ai.muling.store,api.antsk.cn"
+      NEW_API_ALLOW_PRIVATE_HOSTS: "false"
+      NEW_API_DEFAULT_ENDPOINT: "https://ai.muling.store"
+      PROJECT_STORE_PORT: "8790"
+      PROJECT_STORE_DATA_DIR: "/data"
+      PROJECT_STORE_BACKUP_FILE: "project-store-backup.json"
+      PROJECT_STORE_NEW_API_BASE_URL: "http://127.0.0.1:8790"
+    volumes:
+      - ./server/backendServer.mjs:/app/server/backendServer.mjs:ro
+      - ./server/mediaProxyServer.mjs:/app/server/mediaProxyServer.mjs:ro
+      - ./server/newApiProxyCore.mjs:/app/server/newApiProxyCore.mjs:ro
+      - ./server/projectStoreServer.mjs:/app/server/projectStoreServer.mjs:ro
+      - ./data:/data
+    expose:
+      - "8790"
     restart: unless-stopped

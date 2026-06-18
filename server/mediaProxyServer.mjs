@@ -1,4 +1,5 @@
 import http from 'node:http';
+import { pathToFileURL } from 'node:url';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 
@@ -146,10 +147,19 @@ const handleProxyRequest = async (req, res, requestUrl) => {
   }
 };
 
-const server = http.createServer(async (req, res) => {
+export const createMediaProxyHandler = () => async (req, res, next) => {
   try {
     const requestUrl = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
     const pathname = requestUrl.pathname;
+
+    if (pathname !== '/healthz' && pathname !== '/api/media-proxy') {
+      if (typeof next === 'function') {
+        next();
+        return;
+      }
+      writeJson(res, 404, { error: 'Not found.' });
+      return;
+    }
 
     if (req.method === 'OPTIONS') {
       setCorsHeaders(res);
@@ -177,10 +187,18 @@ const server = http.createServer(async (req, res) => {
   } catch {
     writeJson(res, 500, { error: 'Internal server error.' });
   }
-});
+};
 
-server.listen(PORT, HOST, () => {
-  console.log(
-    `[media-proxy] listening on http://${HOST}:${PORT} | allowed hosts: ${allowedHostSuffixes.join(', ')}`
-  );
-});
+export const startMediaProxyServer = () => {
+  const server = http.createServer(createMediaProxyHandler());
+  server.listen(PORT, HOST, () => {
+    console.log(
+      `[media-proxy] listening on http://${HOST}:${PORT} | allowed hosts: ${allowedHostSuffixes.join(', ')}`
+    );
+  });
+  return server;
+};
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  startMediaProxyServer();
+}
