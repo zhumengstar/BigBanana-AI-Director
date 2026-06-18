@@ -137,6 +137,48 @@
     return null;
   };
 
+  var getModelProvider = function (model) {
+    try {
+      var registry = window.BIGBANANA_MODEL_REGISTRY_CONFIG;
+      if (!registry) {
+        registry = JSON.parse(window.localStorage.getItem('bigbanana_model_registry') || '{}');
+      }
+      var providers = registry && Array.isArray(registry.providers) ? registry.providers : [];
+      return providers.find(function (provider) {
+        return provider && model && provider.id === model.providerId;
+      }) || null;
+    } catch (error) {
+      return null;
+    }
+  };
+
+  var getImageModelRequestFormat = function (model) {
+    var params = (model && model.params) || {};
+    if (params.requestFormat) return params.requestFormat;
+    if (params.apiFormat === 'openai-chat') return 'openai-chat-image';
+    if (params.apiFormat === 'openai-image') return 'openai-image';
+    if (isGeminiFlashImageModel(model)) return 'openai-chat-image';
+    return 'openai-image';
+  };
+
+  var getImageModelResponseFormat = function (model) {
+    var params = (model && model.params) || {};
+    return params.responseFormat || getImageModelRequestFormat(model);
+  };
+
+  var getImageModelEndpoint = function (model) {
+    var requestFormat = getImageModelRequestFormat(model);
+    return (model && model.endpoint) || (requestFormat === 'openai-chat-image'
+      ? '/v1/chat/completions'
+      : '/v1/images/generations');
+  };
+
+  var getImageModelPublicUrl = function (model) {
+    var provider = getModelProvider(model);
+    var baseUrl = (provider && provider.baseUrl) || '/api/ai-muling';
+    return String(baseUrl).replace(/\/+$/, '') + getImageModelEndpoint(model);
+  };
+
   var buildOpenAiImageBody = function (bodyText) {
     var originalBody = parseJson(bodyText);
     var activeModel = getActiveImageModel() || {};
@@ -200,24 +242,37 @@
 
     var path = parsed.pathname.toLowerCase();
     var bodyLower = String(bodyText || '').toLowerCase();
+    var activeModel = getActiveImageModel();
+    var requestFormat = getImageModelRequestFormat(activeModel);
+    var responseFormat = getImageModelResponseFormat(activeModel);
 
     if (path.indexOf('/v1/images/generations') >= 0) {
-      var activeModel = getActiveImageModel();
-      if (isGeminiFlashImageModel(activeModel)) {
+      if (requestFormat === 'openai-chat-image') {
         return {
-          upstreamFormat: 'openai-chat-image',
+          upstreamFormat: responseFormat,
           clientFormat: 'gemini-image',
-          upstreamPublicUrl: '/api/ai-muling/v1/chat/completions',
+          upstreamPublicUrl: getImageModelPublicUrl(activeModel),
           transformBody: buildGeminiChatImageBody,
-          reason: 'gemini-flash-image-chat-compatible-endpoint'
+          reason: 'image-model-chat-compatible-endpoint'
         };
       }
 
       return {
-        upstreamFormat: 'openai-image',
+        upstreamFormat: responseFormat,
         clientFormat: 'gemini-image',
+        upstreamPublicUrl: getImageModelPublicUrl(activeModel),
         transformBody: buildOpenAiImageBody,
         reason: 'openai-compatible-images-endpoint'
+      };
+    }
+
+    if (path.indexOf('/v1/chat/completions') >= 0 && requestFormat === 'openai-chat-image') {
+      return {
+        upstreamFormat: responseFormat,
+        clientFormat: 'gemini-image',
+        upstreamPublicUrl: getImageModelPublicUrl(activeModel),
+        transformBody: buildGeminiChatImageBody,
+        reason: 'openai-compatible-chat-image-endpoint'
       };
     }
 

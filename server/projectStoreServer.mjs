@@ -15,8 +15,31 @@ const IMAGE_TASK_WORKERS = Math.max(1, Number.parseInt(process.env.PROJECT_STORE
 const IMAGE_TASK_TIMEOUT_MS = Math.max(1000, Number.parseInt(process.env.PROJECT_STORE_IMAGE_TASK_TIMEOUT_MS || '600000', 10));
 const IMAGE_TASK_TIMEOUT_MESSAGE = 'Image task timed out after 10 minutes.';
 const AI_MULING_API_KEY = process.env.AI_MULING_API_KEY || '';
-const AI_MULING_IMAGE_CHAT_MODEL = process.env.AI_MULING_IMAGE_CHAT_MODEL || 'gemini-3.1-flash-image';
-const AI_MULING_IMAGE_CHAT_PUBLIC_URL = '/api/ai-muling/v1/chat/completions';
+const NEW_API_CHANNEL_ID = process.env.PROJECT_STORE_NEW_API_CHANNEL_ID || 'ai-muling';
+const NEW_API_PROVIDER_ID = `newapi-${NEW_API_CHANNEL_ID}`;
+const NEW_API_PROVIDER_NAME = process.env.PROJECT_STORE_NEW_API_PROVIDER_NAME || 'New API (ai.muling.store)';
+const NEW_API_PUBLIC_BASE_URL = (process.env.PROJECT_STORE_NEW_API_PUBLIC_BASE_URL || '/api/ai-muling').replace(/\/+$/, '');
+const NEW_API_UPSTREAM_BASE_URL = (process.env.PROJECT_STORE_NEW_API_UPSTREAM_BASE_URL || 'https://ai.muling.store').replace(/\/+$/, '');
+const DEFAULT_IMAGE_MODEL_ID = process.env.PROJECT_STORE_DEFAULT_IMAGE_MODEL_ID || 'newapi-gpt-image-2';
+
+const DEFAULT_NEW_API_IMAGE_MODELS = [
+  {
+    id: 'newapi-gpt-image-2',
+    name: 'GPT Image 2',
+    apiModel: 'gpt-image-2',
+    requestFormat: 'openai-image',
+    responseFormat: 'openai-image',
+    endpoint: '/v1/images/generations',
+  },
+  {
+    id: 'newapi-gemini-3-1-flash-image',
+    name: 'Gemini 3.1 Flash Image',
+    apiModel: 'gemini-3.1-flash-image',
+    requestFormat: 'openai-chat-image',
+    responseFormat: 'openai-chat-image',
+    endpoint: '/v1/chat/completions',
+  },
+];
 
 const backupPath = path.join(DATA_DIR, BACKUP_FILE);
 const imageTasksPath = path.join(DATA_DIR, IMAGE_TASKS_FILE);
@@ -310,25 +333,145 @@ const isAiMulingEndpoint = (rawUrl) => {
   }
 };
 
-const shouldRouteNewApiImageTaskToAiMulingChat = ({ endpoint, taskPath }) => (
-  isAiMulingEndpoint(endpoint)
-  && String(taskPath || '').replace(/\/+/g, '/').endsWith('/v1/images/generations')
-);
+const parseConfiguredImageModels = () => {
+  const raw = process.env.PROJECT_STORE_IMAGE_MODELS_JSON;
+  if (!raw || !raw.trim()) return DEFAULT_NEW_API_IMAGE_MODELS;
+  try {
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed) && parsed.length) return parsed;
+  } catch (error) {
+    console.warn('[project-store] invalid PROJECT_STORE_IMAGE_MODELS_JSON, using defaults', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+  return DEFAULT_NEW_API_IMAGE_MODELS;
+};
 
-const buildAiMulingChatImageBody = (sourceBody) => {
+const configuredImageModels = parseConfiguredImageModels().map((model) => {
+  const apiModel = String(model.apiModel || model.model || model.id || '').trim();
+  const requestFormat = String(model.requestFormat || model.params?.requestFormat || (
+    apiModel === 'gemini-3.1-flash-image' ? 'openai-chat-image' : 'openai-image'
+  ));
+  return {
+    id: String(model.id || `newapi-${apiModel}`).trim(),
+    name: String(model.name || apiModel).trim(),
+    apiModel,
+    type: 'image',
+    providerId: NEW_API_PROVIDER_ID,
+    endpoint: String(model.endpoint || (
+      requestFormat === 'openai-chat-image' ? '/v1/chat/completions' : '/v1/images/generations'
+    )),
+    requestFormat,
+    responseFormat: String(model.responseFormat || requestFormat),
+    isBuiltIn: false,
+    isEnabled: model.isEnabled !== false,
+    params: {
+      apiFormat: requestFormat === 'openai-chat-image' ? 'openai-chat' : 'openai-image',
+      requestFormat,
+      responseFormat: String(model.responseFormat || requestFormat),
+      defaultAspectRatio: '9:16',
+      supportedAspectRatios: ['16:9', '9:16', '1:1'],
+      outputImageCount: 1,
+      resultSelectionMode: 'first',
+      size: '1024x1024',
+      aspectRatioSizeMap: {
+        '16:9': '1024x1024',
+        '9:16': '1024x1024',
+        '1:1': '1024x1024',
+      },
+      ...(model.params && typeof model.params === 'object' ? model.params : {}),
+    },
+  };
+}).filter((model) => model.id && model.apiModel);
+
+const modelNameOf = (value) => String(value || '').trim().toLowerCase();
+
+const findImageModelRoute = (sourceBody, metadata) => {
+  const body = typeof sourceBody === 'string' ? (() => {
+    try {
+      return JSON.parse(sourceBody);
+    } catch {
+      return {};
+    }
+  })() : (sourceBody || {});
+  const candidates = [
+    body?.model,
+    metadata?.activeImageModel?.apiModel,
+    metadata?.activeImageModel?.id,
+    DEFAULT_IMAGE_MODEL_ID,
+  ].map(modelNameOf).filter(Boolean);
+
+  let model = configuredImageModels.find((item) => candidates.includes(modelNameOf(item.apiModel))
+    || candidates.includes(modelNameOf(item.id)));
+  if (!model) {
+    model = configuredImageModels.find((item) => item.id === DEFAULT_IMAGE_MODEL_ID) || configuredImageModels[0];
+  }
+
+  return model || DEFAULT_NEW_API_IMAGE_MODELS[0];
+};
+
+const buildImageModelConfig = () => ({
+  providers: [{
+    id: NEW_API_PROVIDER_ID,
+    name: NEW_API_PROVIDER_NAME,
+    baseUrl: NEW_API_PUBLIC_BASE_URL,
+    upstreamBaseUrl: NEW_API_UPSTREAM_BASE_URL,
+    isBuiltIn: false,
+    isDefault: true,
+    capabilities: ['image', 'chat'],
+  }],
+  models: configuredImageModels,
+  activeModels: {
+    image: configuredImageModels.some((model) => model.id === DEFAULT_IMAGE_MODEL_ID)
+      ? DEFAULT_IMAGE_MODEL_ID
+      : configuredImageModels[0]?.id,
+  },
+});
+
+const publicUrlForImageRoute = (route) => `${NEW_API_PUBLIC_BASE_URL}${route.endpoint || '/v1/images/generations'}`;
+
+const buildOpenAiImageBody = (sourceBody, route) => {
+  const parsed = typeof sourceBody === 'string' ? (() => {
+    try {
+      return JSON.parse(sourceBody);
+    } catch {
+      return {};
+    }
+  })() : (sourceBody || {});
+  const prompt = extractPromptFromUpstreamBody(parsed);
+  if (!prompt) {
+    throw new Error('Missing image prompt.');
+  }
+
+  return JSON.stringify({
+    ...parsed,
+    model: route.apiModel || parsed.model || 'gpt-image-2',
+    prompt,
+    n: Number(parsed.n || route.params?.n || 1) || 1,
+    size: parsed.size || route.params?.size || '1024x1024',
+  });
+};
+
+const buildChatImageBody = (sourceBody, route) => {
   const prompt = extractPromptFromUpstreamBody(sourceBody);
   if (!prompt) {
     throw new Error('Missing image prompt.');
   }
 
   return JSON.stringify({
-    model: AI_MULING_IMAGE_CHAT_MODEL,
+    model: route.apiModel || 'gemini-3.1-flash-image',
     messages: [{
       role: 'user',
       content: prompt,
     }],
   });
 };
+
+const buildImageBodyForRoute = (sourceBody, route) => (
+  route.requestFormat === 'openai-chat-image'
+    ? buildChatImageBody(sourceBody, route)
+    : buildOpenAiImageBody(sourceBody, route)
+);
 
 const dataUrlFromMediaUrl = async (mediaUrl) => {
   const filePath = mediaPathForUrl(mediaUrl);
@@ -913,6 +1056,14 @@ export const createProjectStoreHandler = () => async (req, res, next) => {
       return;
     }
 
+    if (pathname === '/api/project-store/model-config' && req.method === 'GET') {
+      writeJson(res, 200, {
+        ok: true,
+        config: buildImageModelConfig(),
+      });
+      return;
+    }
+
     if (pathname === '/api/new-api/image-tasks' && req.method === 'POST') {
       const body = await readBody(req);
       let payload;
@@ -929,14 +1080,26 @@ export const createProjectStoreHandler = () => async (req, res, next) => {
         if (!endpoint) throw new Error('Missing image task endpoint.');
         if (!taskPath.startsWith('/')) throw new Error('Invalid image task path.');
         const sourcePayload = payload?.payload || {};
-        const useAiMulingChatRoute = shouldRouteNewApiImageTaskToAiMulingChat({ endpoint, taskPath });
-        const upstreamUrl = useAiMulingChatRoute ? AI_MULING_IMAGE_CHAT_PUBLIC_URL : `${endpoint}${taskPath}`;
+        const route = isAiMulingEndpoint(endpoint)
+          ? findImageModelRoute(sourcePayload, payload?.metadata)
+          : null;
+        const upstreamUrl = route ? publicUrlForImageRoute(route) : `${endpoint}${taskPath}`;
         const authorization = authorizationForUpstream(upstreamUrl, payload?.authorization);
+        const responseFormat = route?.responseFormat || 'openai-image';
 
         const task = await createPersistentImageTask({
-          responseFormat: useAiMulingChatRoute ? 'openai-chat-image' : 'openai-image',
+          responseFormat,
           upstreamPublicUrl: upstreamUrl,
-          metadata: payload?.metadata,
+          metadata: {
+            ...(payload?.metadata || {}),
+            resolvedImageModel: route ? {
+              id: route.id,
+              apiModel: route.apiModel,
+              endpoint: route.endpoint,
+              requestFormat: route.requestFormat,
+              responseFormat: route.responseFormat,
+            } : null,
+          },
           target: payload?.target,
           upstream: {
             url: normalizeUpstreamUrl(upstreamUrl),
@@ -946,9 +1109,7 @@ export const createProjectStoreHandler = () => async (req, res, next) => {
               'Content-Type': 'application/json',
               ...(authorization ? { Authorization: authorization } : {}),
             },
-            body: useAiMulingChatRoute
-              ? buildAiMulingChatImageBody(sourcePayload)
-              : JSON.stringify(sourcePayload),
+            body: route ? buildImageBodyForRoute(sourcePayload, route) : JSON.stringify(sourcePayload),
           },
         });
 
