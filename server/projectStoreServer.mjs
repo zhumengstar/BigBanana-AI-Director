@@ -41,6 +41,8 @@ const DEFAULT_NEW_API_IMAGE_MODELS = [
   },
 ];
 
+const IMAGE_FALLBACK_MODEL_ID = process.env.PROJECT_STORE_IMAGE_FALLBACK_MODEL_ID || 'newapi-gemini-3-1-flash-image';
+
 const backupPath = path.join(DATA_DIR, BACKUP_FILE);
 const imageTasksPath = path.join(DATA_DIR, IMAGE_TASKS_FILE);
 const mediaRoot = path.join(DATA_DIR, 'media');
@@ -232,6 +234,12 @@ const taskDiskView = (task) => ({
         headers: sanitizeHeadersForDisk(task.upstream.headers),
       }
     : task.upstream,
+  fallbackUpstreams: Array.isArray(task.fallbackUpstreams)
+    ? task.fallbackUpstreams.map((upstream) => ({
+        ...upstream,
+        headers: sanitizeHeadersForDisk(upstream.headers),
+      }))
+    : task.fallbackUpstreams,
 });
 
 const persistImageTasks = () => {
@@ -326,6 +334,8 @@ const isAiMulingEndpoint = (rawUrl) => {
   try {
     const input = new URL(String(rawUrl || ''), 'http://local.bigbanana');
     return input.hostname === 'ai.muling.store'
+      || input.pathname === '/api/ai-muling'
+      || input.pathname === '/api/new-api'
       || input.pathname.startsWith('/api/ai-muling/')
       || input.pathname.startsWith('/api/new-api/');
   } catch {
@@ -430,6 +440,21 @@ const buildImageModelConfig = () => ({
 
 const publicUrlForImageRoute = (route) => `${NEW_API_PUBLIC_BASE_URL}${route.endpoint || '/v1/images/generations'}`;
 
+const imageRoutePublicView = (route) => route ? {
+  id: route.id,
+  apiModel: route.apiModel,
+  endpoint: route.endpoint,
+  requestFormat: route.requestFormat,
+  responseFormat: route.responseFormat,
+} : null;
+
+const fallbackRoutesForImageRoute = (route) => {
+  if (!route || modelNameOf(route.id) === modelNameOf(IMAGE_FALLBACK_MODEL_ID)) return [];
+  const fallback = configuredImageModels.find((model) => modelNameOf(model.id) === modelNameOf(IMAGE_FALLBACK_MODEL_ID));
+  if (!fallback || modelNameOf(fallback.id) === modelNameOf(route.id)) return [];
+  return [fallback];
+};
+
 const buildOpenAiImageBody = (sourceBody, route) => {
   const parsed = typeof sourceBody === 'string' ? (() => {
     try {
@@ -472,6 +497,33 @@ const buildImageBodyForRoute = (sourceBody, route) => (
     ? buildChatImageBody(sourceBody, route)
     : buildOpenAiImageBody(sourceBody, route)
 );
+
+const fallbackReasonFromError = (error) => {
+  const message = String(error?.message || error || '');
+  const status = Number(error?.status || 0);
+  const haystack = `${message}\n${error?.responseText || ''}`.toLowerCase();
+  if (
+    status === 503
+    && (
+      haystack.includes('model_not_found')
+      || haystack.includes('no available')
+      || haystack.includes('distributor')
+      || haystack.includes('无可用渠道')
+      || haystack.includes('模型') && haystack.includes('无可用')
+    )
+  ) {
+    return message.slice(0, 1000);
+  }
+  if (
+    haystack.includes('model_not_found')
+    || haystack.includes('no available channel')
+    || haystack.includes('no available distributor')
+    || haystack.includes('无可用渠道')
+  ) {
+    return message.slice(0, 1000);
+  }
+  return null;
+};
 
 const dataUrlFromMediaUrl = async (mediaUrl) => {
   const filePath = mediaPathForUrl(mediaUrl);
@@ -743,6 +795,7 @@ const runImageTask = async (task) => {
   task.status = 'running';
   task.startedAt = Date.now();
   task.updatedAt = Date.now();
+  task.attempts = Array.isArray(task.attempts) ? task.attempts : [];
   await persistImageTasks();
   console.log('[project-store] image task running', {
     id: task.id,
@@ -759,25 +812,113 @@ const runImageTask = async (task) => {
   imageTaskControllers.set(task.id, controller);
 
   try {
-    const response = await fetch(task.upstream.url, {
-      method: task.upstream.method || 'POST',
-      headers: task.upstream.headers,
-      body: task.upstream.body,
-      signal: controller.signal,
-    });
-    const responseText = await response.text();
-    if (!response.ok) {
-      throw new Error(`Provider request failed with HTTP ${response.status}: ${responseText.slice(0, 1000)}`);
+    const attemptUpstreams = [
+      {
+        kind: 'primary',
+        upstreamPublicUrl: task.upstreamPublicUrl,
+        upstream: task.upstream,
+        responseFormat: task.responseFormat,
+        imageModel: task.metadata?.resolvedImageModel || null,
+      },
+      ...(Array.isArray(task.fallbackUpstreams) ? task.fallbackUpstreams.map((fallback) => ({
+        kind: 'fallback',
+        upstreamPublicUrl: fallback.upstreamPublicUrl,
+        upstream: fallback,
+        responseFormat: fallback.responseFormat,
+        imageModel: fallback.imageModel || null,
+      })) : []),
+    ];
+
+    let extracted;
+    let completedAttempt = null;
+    let lastError = null;
+
+    for (let index = 0; index < attemptUpstreams.length; index += 1) {
+      const attemptConfig = attemptUpstreams[index];
+      const startedAt = Date.now();
+      const attempt = {
+        index,
+        kind: attemptConfig.kind,
+        status: 'running',
+        startedAt,
+        upstreamUrl: attemptConfig.upstreamPublicUrl || attemptConfig.upstream?.url || null,
+        responseFormat: attemptConfig.responseFormat || null,
+        imageModel: imageRoutePublicView(attemptConfig.imageModel),
+      };
+      task.attempts.push(attempt);
+      task.updatedAt = startedAt;
+      await persistImageTasks();
+      console.log('[project-store] image task attempt running', {
+        id: task.id,
+        index,
+        kind: attempt.kind,
+        model: attempt.imageModel?.apiModel || null,
+        upstreamUrl: attempt.upstreamUrl,
+      });
+
+      try {
+        const response = await fetch(attemptConfig.upstream.url, {
+          method: attemptConfig.upstream.method || 'POST',
+          headers: attemptConfig.upstream.headers,
+          body: attemptConfig.upstream.body,
+          signal: controller.signal,
+        });
+        const responseText = await response.text();
+        if (!response.ok) {
+          const providerError = new Error(`Provider request failed with HTTP ${response.status}: ${responseText.slice(0, 1000)}`);
+          providerError.status = response.status;
+          providerError.responseText = responseText;
+          throw providerError;
+        }
+
+        let responseJson;
+        try {
+          responseJson = JSON.parse(responseText);
+        } catch {
+          throw new Error('Provider returned non-JSON response.');
+        }
+
+        extracted = await extractImageFromProviderResponse(responseJson);
+        completedAttempt = attemptConfig;
+        attempt.status = 'completed';
+        attempt.completedAt = Date.now();
+        task.updatedAt = attempt.completedAt;
+        task.responseFormat = attemptConfig.responseFormat || task.responseFormat || extracted.responseFormat;
+        task.metadata = {
+          ...(task.metadata || {}),
+          completedImageModel: imageRoutePublicView(attemptConfig.imageModel),
+        };
+        break;
+      } catch (error) {
+        lastError = error;
+        const endedAt = Date.now();
+        const fallbackReason = !didTimeout && task.status !== 'canceled' && fallbackReasonFromError(error);
+        attempt.status = fallbackReason && index < attemptUpstreams.length - 1 ? 'failed-fallback' : 'failed';
+        attempt.failedAt = endedAt;
+        attempt.error = error instanceof Error ? error.message : 'Image task attempt failed.';
+        task.updatedAt = endedAt;
+        if (fallbackReason && index < attemptUpstreams.length - 1) {
+          task.metadata = {
+            ...(task.metadata || {}),
+            fallbackReason,
+          };
+          console.warn('[project-store] image task attempt failed, trying fallback', {
+            id: task.id,
+            index,
+            model: attempt.imageModel?.apiModel || null,
+            error: attempt.error,
+          });
+          await persistImageTasks();
+          continue;
+        }
+        throw error;
+      }
     }
 
-    let responseJson;
-    try {
-      responseJson = JSON.parse(responseText);
-    } catch {
-      throw new Error('Provider returned non-JSON response.');
+    if (!extracted || !completedAttempt) {
+      throw lastError || new Error('Provider response did not contain an image.');
     }
 
-    const extracted = await extractImageFromProviderResponse(responseJson);
     let mediaResult;
     if (extracted.dataUrl) {
       mediaResult = await writeMediaFromDataUrl({
@@ -900,6 +1041,18 @@ const taskPublicView = async (task, includeDataUrl = false) => {
     bytes: task.bytes || null,
     responseFormat: task.responseFormat || null,
     upstreamUrl: task.upstreamPublicUrl || null,
+    attempts: Array.isArray(task.attempts) ? task.attempts.map((attempt) => ({
+      index: attempt.index,
+      kind: attempt.kind,
+      status: attempt.status,
+      startedAt: attempt.startedAt,
+      completedAt: attempt.completedAt || null,
+      failedAt: attempt.failedAt || null,
+      upstreamUrl: attempt.upstreamUrl || null,
+      responseFormat: attempt.responseFormat || null,
+      imageModel: attempt.imageModel || null,
+      error: attempt.error || null,
+    })) : [],
     prompt: task.prompt || extractPromptFromUpstreamBody(task.upstream?.body) || null,
     metadata: task.metadata || null,
     target: task.target || null,
@@ -932,6 +1085,18 @@ const createPersistentImageTask = async ({ responseFormat, upstreamPublicUrl, up
       headers: sanitizeHeaders(upstream.headers),
       body: typeof upstream.body === 'string' ? upstream.body : JSON.stringify(upstream.body || {}),
     },
+    fallbackUpstreams: Array.isArray(upstream.fallbackUpstreams)
+      ? upstream.fallbackUpstreams.map((fallback) => ({
+          url: fallback.url,
+          method: fallback.method || 'POST',
+          headers: sanitizeHeaders(fallback.headers),
+          body: typeof fallback.body === 'string' ? fallback.body : JSON.stringify(fallback.body || {}),
+          upstreamPublicUrl: fallback.upstreamPublicUrl || null,
+          responseFormat: fallback.responseFormat || null,
+          imageModel: jsonSafeObject(fallback.imageModel),
+        }))
+      : [],
+    attempts: [],
     metadata: jsonSafeObject(metadata),
     target: jsonSafeObject(target),
     error: null,
@@ -1086,6 +1251,23 @@ export const createProjectStoreHandler = () => async (req, res, next) => {
         const upstreamUrl = route ? publicUrlForImageRoute(route) : `${endpoint}${taskPath}`;
         const authorization = authorizationForUpstream(upstreamUrl, payload?.authorization);
         const responseFormat = route?.responseFormat || 'openai-image';
+        const fallbackUpstreams = route ? fallbackRoutesForImageRoute(route).map((fallbackRoute) => {
+          const fallbackUrl = publicUrlForImageRoute(fallbackRoute);
+          const fallbackAuthorization = authorizationForUpstream(fallbackUrl, payload?.authorization);
+          return {
+            url: normalizeUpstreamUrl(fallbackUrl),
+            method: 'POST',
+            headers: {
+              Accept: '*/*',
+              'Content-Type': 'application/json',
+              ...(fallbackAuthorization ? { Authorization: fallbackAuthorization } : {}),
+            },
+            body: buildImageBodyForRoute(sourcePayload, fallbackRoute),
+            upstreamPublicUrl: fallbackUrl,
+            responseFormat: fallbackRoute.responseFormat,
+            imageModel: imageRoutePublicView(fallbackRoute),
+          };
+        }) : [];
 
         const task = await createPersistentImageTask({
           responseFormat,
@@ -1110,6 +1292,7 @@ export const createProjectStoreHandler = () => async (req, res, next) => {
               ...(authorization ? { Authorization: authorization } : {}),
             },
             body: route ? buildImageBodyForRoute(sourcePayload, route) : JSON.stringify(sourcePayload),
+            fallbackUpstreams,
           },
         });
 
