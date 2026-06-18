@@ -4,7 +4,7 @@
  */
 
 import React, { useEffect, useState } from 'react';
-import { Check, X, ChevronDown, ChevronUp } from 'lucide-react';
+import { Check, ChevronDown, ChevronUp, Eye, EyeOff, X } from 'lucide-react';
 import { 
   ModelType, 
   ModelDefinition,
@@ -43,6 +43,8 @@ const AddModelForm: React.FC<AddModelFormProps> = ({ type, onSave, onCancel }) =
   const [customProviderName, setCustomProviderName] = useState('');
   const [customProviderBaseUrl, setCustomProviderBaseUrl] = useState('');
   const [customProviderApiKey, setCustomProviderApiKey] = useState('');
+  const [showApiKey, setShowApiKey] = useState(false);
+  const [showCustomProviderApiKey, setShowCustomProviderApiKey] = useState(false);
   
   // 展开高级选项
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -186,15 +188,26 @@ const AddModelForm: React.FC<AddModelFormProps> = ({ type, onSave, onCancel }) =
       {providerMode === 'existing' && (
         <div>
           <label className="text-[10px] text-[var(--text-tertiary)] block mb-1">API Key（可选）</label>
-          <input
-            type="password"
-            value={apiKey}
-            onChange={(e) => setApiKey(e.target.value)}
-            placeholder="留空则使用全局 API Key"
-            className="w-full bg-[var(--bg-hover)] border border-[var(--border-secondary)] rounded px-3 py-2 text-xs text-[var(--text-primary)] placeholder:text-[var(--text-muted)] font-mono"
-          />
+          <div className="relative">
+            <input
+              type={showApiKey ? 'text' : 'password'}
+              value={apiKey}
+              onChange={(e) => setApiKey(e.target.value)}
+              placeholder="可选：为此模型单独填写 API Key"
+              className="w-full bg-[var(--bg-hover)] border border-[var(--border-secondary)] rounded px-3 py-2 pr-10 text-xs text-[var(--text-primary)] placeholder:text-[var(--text-muted)] font-mono"
+            />
+            <button
+              type="button"
+              onClick={() => setShowApiKey(value => !value)}
+              className="absolute right-2 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded text-[var(--text-tertiary)] transition-colors hover:bg-[var(--bg-elevated)] hover:text-[var(--text-primary)]"
+              aria-label={showApiKey ? '隐藏 API Key' : '显示 API Key'}
+              title={showApiKey ? '隐藏 API Key' : '显示 API Key'}
+            >
+              {showApiKey ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+            </button>
+          </div>
           <p className="text-[9px] text-[var(--text-muted)] mt-1">
-            为此模型单独配置 API Key，留空则使用全局配置的 Key
+            留空则不为此模型保存单独 API Key
           </p>
         </div>
       )}
@@ -259,13 +272,24 @@ const AddModelForm: React.FC<AddModelFormProps> = ({ type, onSave, onCancel }) =
             </div>
             <div>
               <label className="text-[10px] text-[var(--text-tertiary)] block mb-1">提供商 API Key *</label>
-              <input
-                type="password"
-                value={customProviderApiKey}
-                onChange={(e) => setCustomProviderApiKey(e.target.value)}
-                placeholder="输入此提供商的 API Key"
-                className="w-full bg-[var(--bg-hover)] border border-[var(--border-secondary)] rounded px-3 py-2 text-xs text-[var(--text-primary)] placeholder:text-[var(--text-muted)] font-mono"
-              />
+              <div className="relative">
+                <input
+                  type={showCustomProviderApiKey ? 'text' : 'password'}
+                  value={customProviderApiKey}
+                  onChange={(e) => setCustomProviderApiKey(e.target.value)}
+                  placeholder="输入此提供商的 API Key"
+                  className="w-full bg-[var(--bg-hover)] border border-[var(--border-secondary)] rounded px-3 py-2 pr-10 text-xs text-[var(--text-primary)] placeholder:text-[var(--text-muted)] font-mono"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowCustomProviderApiKey(value => !value)}
+                  className="absolute right-2 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded text-[var(--text-tertiary)] transition-colors hover:bg-[var(--bg-elevated)] hover:text-[var(--text-primary)]"
+                  aria-label={showCustomProviderApiKey ? '隐藏 API Key' : '显示 API Key'}
+                  title={showCustomProviderApiKey ? '隐藏 API Key' : '显示 API Key'}
+                >
+                  {showCustomProviderApiKey ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                </button>
+              </div>
               <p className="text-[9px] text-[var(--text-muted)] mt-1">
                 此 API Key 会用于该提供商下的所有模型
               </p>

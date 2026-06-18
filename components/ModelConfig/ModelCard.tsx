@@ -4,7 +4,7 @@
  */
 
 import React, { useState } from 'react';
-import { ChevronDown, ChevronUp, Trash2, ToggleLeft, ToggleRight, CheckCircle, Circle } from 'lucide-react';
+import { CheckCircle, ChevronDown, ChevronUp, Circle, Eye, EyeOff, ToggleLeft, ToggleRight, Trash2 } from 'lucide-react';
 import { 
   ModelDefinition, 
   ChatModelParams,
@@ -36,6 +36,7 @@ const ModelCard: React.FC<ModelCardProps> = ({
 }) => {
   const [editParams, setEditParams] = useState<any>(model.params);
   const [editApiKey, setEditApiKey] = useState<string>(model.apiKey || '');
+  const [showApiKey, setShowApiKey] = useState(false);
   const provider = getProviderById(model.providerId);
   const isVolcengineModel = model.providerId === 'volcengine';
   const modelHasApiKey = Boolean(model.apiKey?.trim());
@@ -265,23 +266,34 @@ const ModelCard: React.FC<ModelCardProps> = ({
             {/* 模型专属 API Key */}
             <div>
               <label className="text-[10px] text-[var(--text-tertiary)] block mb-1">
-                API Key（留空使用全局 Key）
+                API Key（可选）
               </label>
               {isVolcengineModel && (
                 <p className="text-[9px] text-[var(--warning-text)] mb-1">
-                  火山模型不会使用全局 API Key，请填写模型 Key 或 Volcengine 提供商 Key。
+                  请填写模型 Key 或 Volcengine 提供商 Key。
                 </p>
               )}
-              <input
-                type="password"
-                value={editApiKey}
-                onChange={(e) => handleApiKeyChange(e.target.value)}
-                placeholder="留空则使用全局 API Key"
-                className="w-full bg-[var(--bg-hover)] border border-[var(--border-secondary)] rounded px-3 py-2 text-xs text-[var(--text-primary)] placeholder:text-[var(--text-muted)] font-mono"
-              />
+              <div className="relative">
+                <input
+                  type={showApiKey ? 'text' : 'password'}
+                  value={editApiKey}
+                  onChange={(e) => handleApiKeyChange(e.target.value)}
+                  placeholder="可选：为此模型单独填写 API Key"
+                  className="w-full bg-[var(--bg-hover)] border border-[var(--border-secondary)] rounded px-3 py-2 pr-10 text-xs text-[var(--text-primary)] placeholder:text-[var(--text-muted)] font-mono"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowApiKey(value => !value)}
+                  className="absolute right-2 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded text-[var(--text-tertiary)] transition-colors hover:bg-[var(--bg-elevated)] hover:text-[var(--text-primary)]"
+                  aria-label={showApiKey ? '隐藏 API Key' : '显示 API Key'}
+                  title={showApiKey ? '隐藏 API Key' : '显示 API Key'}
+                >
+                  {showApiKey ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                </button>
+              </div>
               {isMissingVolcengineKey && (
                 <p className="text-[9px] text-[var(--error-text)] mt-1">
-                  未配置火山引擎 Key，当前模型无法调用且不会回退到全局 Key。
+                  未配置火山引擎 Key，当前模型无法调用。
                 </p>
               )}
               {model.apiKey && (

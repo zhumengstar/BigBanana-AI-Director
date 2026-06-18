@@ -16,7 +16,7 @@ services:
       - ./web-hotpatch/bb-async-image-tasks.js:/usr/share/nginx/html/bb-async-image-tasks.js:ro
       - ./web-hotpatch/assets/cutos-editor-lIBo6A3F.js:/usr/share/nginx/html/assets/cutos-editor-lIBo6A3F.js:ro
       - ./web-hotpatch/assets/favicon-D7RNB3ts.ico:/usr/share/nginx/html/assets/favicon-D7RNB3ts.ico:ro
-      - ./web-hotpatch/assets/icons-oZkJq5vn.js:/usr/share/nginx/html/assets/icons-oZkJq5vn.js:ro
+      - ./web-hotpatch/assets/icons-Cl1wufkh.js:/usr/share/nginx/html/assets/icons-Cl1wufkh.js:ro
       - ./web-hotpatch/assets/index-YggY4CaN.css:/usr/share/nginx/html/assets/index-YggY4CaN.css:ro
       - ./web-hotpatch/assets/index-Zl-sIpQS.js:/usr/share/nginx/html/assets/index-Zl-sIpQS.js:ro
       - ./web-hotpatch/assets/index-jpMSpFue.js:/usr/share/nginx/html/assets/index-jpMSpFue.js:ro
