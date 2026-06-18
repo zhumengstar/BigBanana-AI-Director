@@ -34,7 +34,7 @@
     ].map(function(p){ var q = Object.assign({}, p); if (!q.apiKey) delete q.apiKey; return q; });
     var models = [
       { id: "custom-chat-gpt-5-5", apiModel: "gpt-5.5", name: "Custom GPT-5.5", type: "chat", providerId: customProviderId, endpoint: "/v1/chat/completions", isBuiltIn: false, isEnabled: true, params: modelParams("chat") },
-      { id: "custom-image-gpt-image-2", apiModel: "gpt-image-2", name: "Custom GPT Image 2", type: "image", providerId: customProviderId, endpoint: "/v1/images/generations", isBuiltIn: false, isEnabled: true, params: modelParams("image") },
+      { id: "custom-image-gpt-image-2", apiModel: "codex-gpt-image-2", name: "Custom Codex GPT Image 2", type: "image", providerId: customProviderId, endpoint: "/v1/images/generations", isBuiltIn: false, isEnabled: true, params: modelParams("image") },
       { id: "seedance-newapi-2-0-260128", apiModel: seedanceModel, name: "Seedance 2.0 NewAPI", type: "video", providerId: seedanceProviderId, endpoint: "/v1/videos", isBuiltIn: false, isEnabled: true, params: modelParams("video") },
       { id: "custom-audio-gpt-audio-1-5", apiModel: "gpt-audio-1.5", name: "Custom GPT Audio 1.5", type: "audio", providerId: customProviderId, endpoint: "/v1/chat/completions", isBuiltIn: false, isEnabled: true, params: modelParams("audio") }
     ];
