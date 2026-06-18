@@ -291,6 +291,17 @@
     return value;
   };
 
+  var recoverStaleGeneratingState = function (payload) {
+    if (
+      window.__BIGBANANA_RECOVER_STALE_GENERATING_STATE__ &&
+      typeof window.__BIGBANANA_RECOVER_STALE_GENERATING_STATE__ === 'function'
+    ) {
+      return window.__BIGBANANA_RECOVER_STALE_GENERATING_STATE__(payload);
+    }
+
+    return payload;
+  };
+
   var persistNow = async function () {
     if (restoringFromServer || !initialServerLoadComplete) return;
 
@@ -298,6 +309,7 @@
       var payload = await exportPayload();
       if (countPayloadItems(payload) === 0) return;
       payload = clearTransientGenerationFailures(payload);
+      payload = recoverStaleGeneratingState(payload);
       payload = await materializePayloadMedia(payload);
 
       var signature = contentSignature(payload);
@@ -336,6 +348,7 @@
 
         if (serverPayload && countPayloadItems(serverPayload) > 0) {
           var localPayload = await exportPayload();
+          serverPayload = recoverStaleGeneratingState(clearTransientGenerationFailures(serverPayload));
           var serverSignature = contentSignature(serverPayload);
           var localSignature = contentSignature(localPayload);
 

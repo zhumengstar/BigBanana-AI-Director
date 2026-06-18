@@ -195,6 +195,66 @@
     });
   };
 
+  var hasActiveStoredTask = function () {
+    return Object.keys(state.tasks || {}).some(function (taskId) {
+      var task = state.tasks[taskId];
+      return task && task.status !== 'completed' && task.status !== 'failed' && task.status !== 'poll_error';
+    });
+  };
+
+  var recoverStaleGeneratingState = function (project) {
+    if (!project || hasActiveStoredTask()) return project;
+
+    var changed = false;
+    var markPending = function (item) {
+      if (!item || item.status !== 'generating') return item;
+      if (item.referenceImage || item.imageUrl) return item;
+      changed = true;
+      return Object.assign({}, item, {
+        status: 'pending',
+        lastTransientFailure: 'stale generating state without active server image task'
+      });
+    };
+
+    var next = project;
+    if (project.scriptData) {
+      var scriptData = Object.assign({}, project.scriptData);
+      scriptData.characters = (scriptData.characters || []).map(function (character) {
+        var nextCharacter = markPending(character);
+        var variations = (nextCharacter.variations || []).map(markPending);
+        return variations !== nextCharacter.variations
+          ? Object.assign({}, nextCharacter, { variations: variations })
+          : nextCharacter;
+      });
+      scriptData.scenes = (scriptData.scenes || []).map(markPending);
+      scriptData.props = (scriptData.props || []).map(markPending);
+      next = Object.assign({}, next, { scriptData: scriptData });
+    }
+
+    if (Array.isArray(project.shots)) {
+      next = Object.assign({}, next, {
+        shots: project.shots.map(function (shot) {
+          var keyframes = (shot.keyframes || []).map(markPending);
+          var nineGrid = shot.nineGrid && !shot.nineGrid.imageUrl && (
+            shot.nineGrid.status === 'generating' ||
+            shot.nineGrid.status === 'generating_image' ||
+            shot.nineGrid.status === 'generating_panels'
+          )
+            ? Object.assign({}, shot.nineGrid, {
+                status: 'pending',
+                lastTransientFailure: 'stale generating state without active server image task'
+              })
+            : shot.nineGrid;
+          if (keyframes === shot.keyframes && nineGrid === shot.nineGrid) return shot;
+          changed = true;
+          return Object.assign({}, shot, { keyframes: keyframes, nineGrid: nineGrid });
+        })
+      });
+    }
+
+    return changed ? next : project;
+  };
+
   window.fetch = async function (input, init) {
     var request = input instanceof Request ? input : new Request(input, init);
     var method = (request.method || 'GET').toUpperCase();
@@ -219,4 +279,5 @@
   };
 
   resumeStoredTasks();
+  window.__BIGBANANA_RECOVER_STALE_GENERATING_STATE__ = recoverStaleGeneratingState;
 })();
