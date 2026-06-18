@@ -12,7 +12,11 @@ const IMAGE_TASKS_FILE = process.env.PROJECT_STORE_IMAGE_TASKS_FILE || 'image-ta
 const MAX_BODY_BYTES = Number.parseInt(process.env.PROJECT_STORE_MAX_BODY_BYTES || `${200 * 1024 * 1024}`, 10);
 const CORS_ORIGIN = process.env.PROJECT_STORE_CORS_ORIGIN || '*';
 const IMAGE_TASK_WORKERS = Math.max(1, Number.parseInt(process.env.PROJECT_STORE_IMAGE_TASK_WORKERS || '1', 10));
+const IMAGE_TASK_TIMEOUT_MS = Math.max(1000, Number.parseInt(process.env.PROJECT_STORE_IMAGE_TASK_TIMEOUT_MS || '600000', 10));
+const IMAGE_TASK_TIMEOUT_MESSAGE = 'Image task timed out after 10 minutes.';
 const AI_MULING_API_KEY = process.env.AI_MULING_API_KEY || '';
+const AI_MULING_IMAGE_CHAT_MODEL = process.env.AI_MULING_IMAGE_CHAT_MODEL || 'gemini-3.1-flash-image';
+const AI_MULING_IMAGE_CHAT_PUBLIC_URL = '/api/ai-muling/v1/chat/completions';
 
 const backupPath = path.join(DATA_DIR, BACKUP_FILE);
 const imageTasksPath = path.join(DATA_DIR, IMAGE_TASKS_FILE);
@@ -174,6 +178,7 @@ const writeMediaFromDataUrl = async ({ dataUrl, folder = 'persisted', filenamePr
 
 const imageTasks = new Map();
 const imageTaskQueue = [];
+const imageTaskControllers = new Map();
 let activeImageWorkers = 0;
 let imageTasksSaveChain = Promise.resolve();
 
@@ -294,6 +299,37 @@ const authorizationForUpstream = (rawUrl, providedAuthorization) => {
   return authorization || undefined;
 };
 
+const isAiMulingEndpoint = (rawUrl) => {
+  try {
+    const input = new URL(String(rawUrl || ''), 'http://local.bigbanana');
+    return input.hostname === 'ai.muling.store'
+      || input.pathname.startsWith('/api/ai-muling/')
+      || input.pathname.startsWith('/api/new-api/');
+  } catch {
+    return false;
+  }
+};
+
+const shouldRouteNewApiImageTaskToAiMulingChat = ({ endpoint, taskPath }) => (
+  isAiMulingEndpoint(endpoint)
+  && String(taskPath || '').replace(/\/+/g, '/').endsWith('/v1/images/generations')
+);
+
+const buildAiMulingChatImageBody = (sourceBody) => {
+  const prompt = extractPromptFromUpstreamBody(sourceBody);
+  if (!prompt) {
+    throw new Error('Missing image prompt.');
+  }
+
+  return JSON.stringify({
+    model: AI_MULING_IMAGE_CHAT_MODEL,
+    messages: [{
+      role: 'user',
+      content: prompt,
+    }],
+  });
+};
+
 const dataUrlFromMediaUrl = async (mediaUrl) => {
   const filePath = mediaPathForUrl(mediaUrl);
   if (!filePath) return null;
@@ -398,10 +434,169 @@ const extractPromptFromUpstreamBody = (body) => {
     });
   });
 
+  (parsed?.messages || []).forEach((message) => {
+    if (typeof message?.content === 'string' && message.content.trim()) {
+      texts.push(message.content.trim());
+      return;
+    }
+    if (Array.isArray(message?.content)) {
+      message.content.forEach((part) => {
+        if (typeof part?.text === 'string' && part.text.trim()) {
+          texts.push(part.text.trim());
+        }
+      });
+    }
+  });
+
   return texts.join('\n\n').trim();
 };
 
+const normalizeText = (value) => String(value || '')
+  .toLowerCase()
+  .replace(/\s+/g, ' ')
+  .trim();
+
+const jsonSafeObject = (value) => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  try {
+    return JSON.parse(JSON.stringify(value));
+  } catch {
+    return null;
+  }
+};
+
+const visitObjects = (root, visitor) => {
+  const seen = new WeakSet();
+  const walk = (value, pathParts) => {
+    if (!value || typeof value !== 'object') return;
+    if (seen.has(value)) return;
+    seen.add(value);
+    visitor(value, pathParts);
+    if (Array.isArray(value)) {
+      value.forEach((item, index) => walk(item, [...pathParts, index]));
+      return;
+    }
+    Object.entries(value).forEach(([key, item]) => walk(item, [...pathParts, key]));
+  };
+  walk(root, []);
+};
+
+const hasImageUrl = (item) => Boolean(item?.imageUrl || item?.referenceImage || item?.generatedImage);
+
+const imageCandidateScore = (item, task) => {
+  if (!item || typeof item !== 'object' || Array.isArray(item)) return 0;
+
+  const taskPrompt = normalizeText(task.prompt || extractPromptFromUpstreamBody(task.upstream?.body));
+  const target = task.target || task.metadata?.target || {};
+  let score = 0;
+
+  if (target.id && item.id && String(item.id) === String(target.id)) score += 1000;
+  if (target.assetId && item.id && String(item.id) === String(target.assetId)) score += 1000;
+  if (task.id && (item.serverImageTaskId === task.id || item.imageTaskId === task.id)) score += 900;
+
+  const promptFields = [
+    item.visualPrompt,
+    item.prompt,
+    item.imagePrompt,
+    item.description,
+    item.negativePrompt ? `${item.visualPrompt || item.prompt || ''}\n\n${item.negativePrompt}` : '',
+  ].map(normalizeText).filter(Boolean);
+
+  for (const field of promptFields) {
+    if (!taskPrompt || !field) continue;
+    if (field === taskPrompt) score += 500;
+    else if (field.length > 30 && taskPrompt.includes(field)) score += 260;
+    else if (taskPrompt.length > 30 && field.includes(taskPrompt)) score += 220;
+  }
+
+  const nameFields = [item.name, item.title].map(normalizeText).filter(Boolean);
+  for (const field of nameFields) {
+    if (field && taskPrompt.includes(field)) score += 120;
+  }
+
+  if (['pending', 'generating', 'failed', 'queued'].includes(String(item.status || '').toLowerCase())) score += 50;
+  if (!hasImageUrl(item)) score += 40;
+  if (hasImageUrl(item) && item.serverImageTaskId !== task.id && item.imageTaskId !== task.id) score -= 80;
+
+  return score;
+};
+
+const applyImageTaskToProjectStore = async (task) => {
+  if (!task || task.status !== 'completed' || !task.imageUrl) return false;
+
+  let backup;
+  try {
+    backup = await readBackup();
+  } catch (error) {
+    if (error?.code === 'ENOENT') return false;
+    throw error;
+  }
+
+  let best = null;
+  visitObjects(backup, (item, pathParts) => {
+    const score = imageCandidateScore(item, task);
+    if (score <= 0) return;
+    if (!best || score > best.score) {
+      best = { item, pathParts, score };
+    }
+  });
+
+  if (!best || best.score < 120) {
+    task.projectStoreAppliedAt = task.projectStoreAppliedAt || null;
+    task.projectStoreApplyError = 'No matching project-store image asset found.';
+    return false;
+  }
+
+  best.item.status = 'completed';
+  best.item.imageUrl = task.imageUrl;
+  best.item.referenceImage = task.imageUrl;
+  best.item.generatedImage = task.imageUrl;
+  best.item.serverImageTaskId = task.id;
+  best.item.imageTaskId = task.id;
+  best.item.updatedAt = best.item.updatedAt || Date.now();
+  delete best.item.lastTransientFailure;
+
+  await writeBackup({
+    ...backup,
+    serverPersistedAt: Date.now(),
+    imageTaskAppliedAt: Date.now(),
+  });
+
+  task.projectStoreAppliedAt = Date.now();
+  task.projectStoreTargetPath = best.pathParts.join('.');
+  task.projectStoreTargetId = best.item.id || null;
+  delete task.projectStoreApplyError;
+
+  console.log('[project-store] image task applied to project store', {
+    id: task.id,
+    targetId: task.projectStoreTargetId,
+    targetPath: task.projectStoreTargetPath,
+    score: best.score,
+  });
+
+  return true;
+};
+
+const reconcileCompletedImageTasksWithBackup = async () => {
+  let changed = false;
+  for (const task of imageTasks.values()) {
+    if (!task || task.status !== 'completed' || !task.imageUrl || task.projectStoreAppliedAt) continue;
+    try {
+      changed = await applyImageTaskToProjectStore(task) || changed;
+    } catch (error) {
+      task.projectStoreApplyError = error instanceof Error ? error.message : String(error);
+      console.error('[project-store] failed to reconcile image task with project store', {
+        id: task.id,
+        error: task.projectStoreApplyError,
+      });
+    }
+  }
+  if (changed) await persistImageTasks();
+};
+
 const runImageTask = async (task) => {
+  if (task.status === 'canceled') return;
+
   task.status = 'running';
   task.startedAt = Date.now();
   task.updatedAt = Date.now();
@@ -412,11 +607,20 @@ const runImageTask = async (task) => {
     upstreamUrl: task.upstreamPublicUrl || task.upstream.url,
   });
 
+  const controller = new AbortController();
+  let didTimeout = false;
+  const timeoutId = setTimeout(() => {
+    didTimeout = true;
+    controller.abort(new Error(IMAGE_TASK_TIMEOUT_MESSAGE));
+  }, IMAGE_TASK_TIMEOUT_MS);
+  imageTaskControllers.set(task.id, controller);
+
   try {
     const response = await fetch(task.upstream.url, {
       method: task.upstream.method || 'POST',
       headers: task.upstream.headers,
       body: task.upstream.body,
+      signal: controller.signal,
     });
     const responseText = await response.text();
     if (!response.ok) {
@@ -456,6 +660,15 @@ const runImageTask = async (task) => {
     task.bytes = mediaResult.bytes;
     task.responseFormat = task.responseFormat || extracted.responseFormat;
     task.error = null;
+    try {
+      await applyImageTaskToProjectStore(task);
+    } catch (error) {
+      task.projectStoreApplyError = error instanceof Error ? error.message : String(error);
+      console.error('[project-store] failed to apply image task to project store', {
+        id: task.id,
+        error: task.projectStoreApplyError,
+      });
+    }
     console.log('[project-store] image task completed', {
       id: task.id,
       imageUrl: task.imageUrl,
@@ -463,16 +676,27 @@ const runImageTask = async (task) => {
       bytes: task.bytes,
     });
   } catch (error) {
-    task.status = 'failed';
-    task.failedAt = Date.now();
+    const wasCanceled = task.status === 'canceled' && !didTimeout;
+    task.status = wasCanceled ? 'canceled' : 'failed';
+    if (wasCanceled) {
+      task.canceledAt = task.canceledAt || Date.now();
+      task.error = task.error || 'Image task canceled.';
+    } else if (didTimeout) {
+      task.failedAt = Date.now();
+      task.error = IMAGE_TASK_TIMEOUT_MESSAGE;
+    } else {
+      task.failedAt = Date.now();
+      task.error = error instanceof Error ? error.message : 'Image task failed.';
+    }
     task.updatedAt = Date.now();
-    task.error = error instanceof Error ? error.message : 'Image task failed.';
     console.error('[project-store] image task failed', {
       id: task.id,
       upstreamUrl: task.upstreamPublicUrl || task.upstream.url,
       error: task.error,
     });
   } finally {
+    clearTimeout(timeoutId);
+    imageTaskControllers.delete(task.id);
     await persistImageTasks();
   }
 };
@@ -490,10 +714,31 @@ const drainImageTaskQueue = () => {
 };
 
 const enqueueImageTask = (task) => {
+  if (task.status === 'canceled') return;
   if (!imageTaskQueue.some((queuedTask) => queuedTask.id === task.id)) {
     imageTaskQueue.push(task);
   }
   drainImageTaskQueue();
+};
+
+const cancelImageTask = async (task, reason = 'Image task canceled by user.') => {
+  if (!task) return { ok: false, changed: false, message: 'Image task not found.' };
+  if (task.status === 'completed') return { ok: false, changed: false, message: 'Image task already completed.' };
+  if (task.status === 'failed' || task.status === 'canceled') return { ok: true, changed: false, message: 'Image task already finished.' };
+
+  const queuedIndex = imageTaskQueue.findIndex((queuedTask) => queuedTask?.id === task.id);
+  if (queuedIndex >= 0) imageTaskQueue.splice(queuedIndex, 1);
+
+  task.status = 'canceled';
+  task.canceledAt = Date.now();
+  task.updatedAt = Date.now();
+  task.error = reason;
+
+  const controller = imageTaskControllers.get(task.id);
+  if (controller) controller.abort(reason);
+
+  await persistImageTasks();
+  return { ok: true, changed: true, message: 'Image task canceled.' };
 };
 
 const taskPublicView = async (task, includeDataUrl = false) => {
@@ -505,6 +750,7 @@ const taskPublicView = async (task, includeDataUrl = false) => {
     startedAt: task.startedAt,
     completedAt: task.completedAt,
     failedAt: task.failedAt,
+    canceledAt: task.canceledAt,
     updatedAt: task.updatedAt,
     imageUrl: task.imageUrl || null,
     mimeType: task.mimeType || null,
@@ -512,6 +758,10 @@ const taskPublicView = async (task, includeDataUrl = false) => {
     responseFormat: task.responseFormat || null,
     upstreamUrl: task.upstreamPublicUrl || null,
     prompt: task.prompt || extractPromptFromUpstreamBody(task.upstream?.body) || null,
+    metadata: task.metadata || null,
+    target: task.target || null,
+    projectStoreAppliedAt: task.projectStoreAppliedAt || null,
+    projectStoreTargetId: task.projectStoreTargetId || null,
     error: task.error || null,
   };
 
@@ -522,7 +772,7 @@ const taskPublicView = async (task, includeDataUrl = false) => {
   return view;
 };
 
-const createPersistentImageTask = async ({ responseFormat, upstreamPublicUrl, upstream }) => {
+const createPersistentImageTask = async ({ responseFormat, upstreamPublicUrl, upstream, metadata, target }) => {
   const id = taskId();
   const task = {
     id,
@@ -539,6 +789,8 @@ const createPersistentImageTask = async ({ responseFormat, upstreamPublicUrl, up
       headers: sanitizeHeaders(upstream.headers),
       body: typeof upstream.body === 'string' ? upstream.body : JSON.stringify(upstream.body || {}),
     },
+    metadata: jsonSafeObject(metadata),
+    target: jsonSafeObject(target),
     error: null,
   };
   task.prompt = extractPromptFromUpstreamBody(task.upstream.body) || null;
@@ -577,10 +829,10 @@ const newApiImageTaskView = async (task) => {
     };
   }
 
-  if (task.status === 'failed') {
+  if (task.status === 'failed' || task.status === 'canceled') {
     view.error = {
-      status: 500,
-      message: task.error || 'Image generation task failed.',
+      status: task.status === 'canceled' ? 499 : 500,
+      message: task.error || (task.status === 'canceled' ? 'Image generation task canceled.' : 'Image generation task failed.'),
     };
   }
 
@@ -591,12 +843,32 @@ const loadImageTasks = async () => {
   try {
     const text = await readFile(imageTasksPath, 'utf8');
     const payload = JSON.parse(text);
+    const now = Date.now();
+    const tasksToResume = [];
+    let changed = false;
     (payload.tasks || []).forEach((task) => {
       if (!task || !task.id) return;
-      if (task.status === 'running') task.status = 'queued';
+      const status = String(task.status || '').toLowerCase();
+      const isActive = status === 'queued' || status === 'running';
+      const activeSince = Number(task.startedAt || task.queuedAt || task.createdAt || 0);
+      if (isActive && activeSince && now - activeSince >= IMAGE_TASK_TIMEOUT_MS) {
+        task.status = 'failed';
+        task.failedAt = task.failedAt || now;
+        task.updatedAt = now;
+        task.error = IMAGE_TASK_TIMEOUT_MESSAGE;
+        changed = true;
+      } else if (status === 'running') {
+        task.status = 'queued';
+        task.updatedAt = now;
+        tasksToResume.push(task);
+        changed = true;
+      } else if (status === 'queued') {
+        tasksToResume.push(task);
+      }
       imageTasks.set(task.id, task);
-      if (task.status === 'queued') enqueueImageTask(task);
     });
+    if (changed) await persistImageTasks();
+    tasksToResume.forEach((task) => enqueueImageTask(task));
   } catch (error) {
     if (!error || error.code !== 'ENOENT') {
       console.error('[project-store] failed to load image tasks', error);
@@ -656,21 +928,27 @@ export const createProjectStoreHandler = () => async (req, res, next) => {
         const taskPath = String(payload?.path || '/v1/images/generations');
         if (!endpoint) throw new Error('Missing image task endpoint.');
         if (!taskPath.startsWith('/')) throw new Error('Invalid image task path.');
-        const upstreamUrl = `${endpoint}${taskPath}`;
+        const sourcePayload = payload?.payload || {};
+        const useAiMulingChatRoute = shouldRouteNewApiImageTaskToAiMulingChat({ endpoint, taskPath });
+        const upstreamUrl = useAiMulingChatRoute ? AI_MULING_IMAGE_CHAT_PUBLIC_URL : `${endpoint}${taskPath}`;
         const authorization = authorizationForUpstream(upstreamUrl, payload?.authorization);
 
         const task = await createPersistentImageTask({
-          responseFormat: 'openai-image',
+          responseFormat: useAiMulingChatRoute ? 'openai-chat-image' : 'openai-image',
           upstreamPublicUrl: upstreamUrl,
+          metadata: payload?.metadata,
+          target: payload?.target,
           upstream: {
-            url: upstreamUrl,
+            url: normalizeUpstreamUrl(upstreamUrl),
             method: 'POST',
             headers: {
               Accept: '*/*',
               'Content-Type': 'application/json',
               ...(authorization ? { Authorization: authorization } : {}),
             },
-            body: JSON.stringify(payload?.payload || {}),
+            body: useAiMulingChatRoute
+              ? buildAiMulingChatImageBody(sourcePayload)
+              : JSON.stringify(sourcePayload),
           },
         });
 
@@ -760,6 +1038,8 @@ export const createProjectStoreHandler = () => async (req, res, next) => {
         const task = await createPersistentImageTask({
           responseFormat: payload.responseFormat || upstream.responseFormat || null,
           upstreamPublicUrl: upstream.url,
+          metadata: payload?.metadata,
+          target: payload?.target,
           upstream: {
             url: upstreamUrl,
             method: upstream.method || 'POST',
@@ -775,6 +1055,42 @@ export const createProjectStoreHandler = () => async (req, res, next) => {
           message: error instanceof Error ? error.message : 'Invalid image task payload.',
         });
       }
+      return;
+    }
+
+    if (pathname.endsWith('/cancel') && req.method === 'POST') {
+      const id = decodeURIComponent(pathname.slice('/api/project-store/image-tasks/'.length, -'/cancel'.length));
+      const task = imageTasks.get(id);
+      if (!task) {
+        writeJson(res, 404, { ok: false, message: 'Image task not found.' });
+        return;
+      }
+
+      const result = await cancelImageTask(task);
+      writeJson(res, result.ok ? 200 : 409, {
+        ok: result.ok,
+        changed: result.changed,
+        message: result.message,
+        task: await taskPublicView(task, false),
+      });
+      return;
+    }
+
+    if (pathname.startsWith('/api/project-store/image-tasks/') && req.method === 'DELETE') {
+      const id = decodeURIComponent(pathname.slice('/api/project-store/image-tasks/'.length));
+      const task = imageTasks.get(id);
+      if (!task) {
+        writeJson(res, 404, { ok: false, message: 'Image task not found.' });
+        return;
+      }
+
+      const result = await cancelImageTask(task);
+      writeJson(res, result.ok ? 200 : 409, {
+        ok: result.ok,
+        changed: result.changed,
+        message: result.message,
+        task: await taskPublicView(task, false),
+      });
       return;
     }
 
@@ -881,6 +1197,7 @@ export const initializeProjectStore = async () => {
   if (!imageTasksLoadPromise) {
     imageTasksLoadPromise = loadImageTasks().then(() => {
       imageTasksLoaded = true;
+      return reconcileCompletedImageTasksWithBackup();
     });
   }
   await imageTasksLoadPromise;

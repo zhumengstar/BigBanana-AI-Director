@@ -365,27 +365,141 @@
     return recovered;
   };
 
-  var fetchCompletedImageTasks = async function () {
+  var isActiveImageTask = function (task) {
+    return task && (task.status === 'queued' || task.status === 'running');
+  };
+
+  var isTerminalImageTask = function (task) {
+    return task && (task.status === 'completed' || task.status === 'failed' || task.status === 'canceled');
+  };
+
+  var imageTaskIdForSlot = function (value) {
+    if (!value || typeof value !== 'object') return '';
+    return value.serverImageTaskId || value.imageTaskId || value.recoveredImageTaskId || '';
+  };
+
+  var fetchImageTasks = async function () {
     try {
       var response = await fetch(IMAGE_TASKS_ENDPOINT + '?limit=200', { method: 'GET', cache: 'no-store' });
       if (!response.ok) return [];
       var result = await response.json();
       return (result.tasks || [])
-        .filter(function (task) {
-          return task && task.id && task.status === 'completed' && task.imageUrl;
-        })
+        .filter(function (task) { return task && task.id; })
         .sort(function (a, b) {
-          return (a.completedAt || a.updatedAt || a.createdAt || 0) - (b.completedAt || b.updatedAt || b.createdAt || 0);
+          return (a.completedAt || a.failedAt || a.canceledAt || a.updatedAt || a.createdAt || 0)
+            - (b.completedAt || b.failedAt || b.canceledAt || b.updatedAt || b.createdAt || 0);
         });
     } catch (error) {
-      console.warn('[project-store-sync] image task recovery lookup failed', error);
+      console.warn('[project-store-sync] image task state lookup failed', error);
       return [];
     }
   };
 
-  var recoverCompletedImageTasks = async function (payload) {
+  var applyTerminalImageTaskToSlot = function (slot, task) {
+    if (!slot || !task || !isTerminalImageTask(task)) return false;
+    if (task.status === 'completed' && task.imageUrl) {
+      return applyTaskImageToSlot(slot, task);
+    }
+
+    if (task.status === 'failed' || task.status === 'canceled') {
+      if (hasImageReference(slot)) return false;
+      slot.status = 'failed';
+      slot.imageTaskId = task.id;
+      slot.serverImageTaskId = task.id;
+      slot.imageTaskResolvedAt = Date.now();
+      slot.error = task.error || (task.status === 'canceled' ? 'Image task canceled.' : 'Image generation task failed.');
+      delete slot.failureReason;
+      return true;
+    }
+
+    return false;
+  };
+
+  var syncTerminalImageTaskSlots = function (value, terminalById) {
+    if (!value || typeof value !== 'object') return 0;
+    var changed = 0;
+
+    if (Array.isArray(value)) {
+      for (var i = 0; i < value.length; i += 1) {
+        changed += syncTerminalImageTaskSlots(value[i], terminalById);
+      }
+      return changed;
+    }
+
+    var taskId = imageTaskIdForSlot(value);
+    if (taskId && terminalById[taskId]) {
+      changed += applyTerminalImageTaskToSlot(value, terminalById[taskId]) ? 1 : 0;
+    }
+
+    Object.keys(value).forEach(function (key) {
+      changed += syncTerminalImageTaskSlots(value[key], terminalById);
+    });
+
+    return changed;
+  };
+
+  var clearStaleGeneratingSlots = function (value) {
+    if (!value || typeof value !== 'object') return 0;
+    var changed = 0;
+
+    if (Array.isArray(value)) {
+      for (var i = 0; i < value.length; i += 1) {
+        changed += clearStaleGeneratingSlots(value[i]);
+      }
+      return changed;
+    }
+
+    var status = String(value.status || '').toLowerCase();
+    if ((status === 'generating' || status === 'queued' || status === 'generating_image' || status === 'generating_panels') && !hasImageReference(value)) {
+      value.status = 'pending';
+      value.lastTransientFailure = 'stale generating state without active server image task';
+      delete value.error;
+      delete value.failureReason;
+      changed += 1;
+    }
+
+    Object.keys(value).forEach(function (key) {
+      changed += clearStaleGeneratingSlots(value[key]);
+    });
+
+    return changed;
+  };
+
+  var syncImageTaskState = function (payload, tasks) {
     if (!payload || !payload.stores) return payload;
-    var tasks = await fetchCompletedImageTasks();
+    var activeTasks = tasks.filter(isActiveImageTask);
+    var terminalById = {};
+    tasks.filter(isTerminalImageTask).forEach(function (task) {
+      terminalById[task.id] = task;
+    });
+
+    var terminalSynced = syncTerminalImageTaskSlots(payload.stores, terminalById);
+    var staleCleared = activeTasks.length === 0 ? clearStaleGeneratingSlots(payload.stores) : 0;
+
+    window.__BIGBANANA_SERVER_IMAGE_TASK_STATE__ = {
+      ok: true,
+      active: activeTasks.length,
+      terminal: Object.keys(terminalById).length,
+      terminalSynced: terminalSynced,
+      staleCleared: staleCleared,
+      at: Date.now()
+    };
+
+    if (terminalSynced > 0 || staleCleared > 0) {
+      payload.imageTasksSyncedAt = Date.now();
+      payload.imageTasksTerminalSyncedCount = (payload.imageTasksTerminalSyncedCount || 0) + terminalSynced;
+      payload.imageTasksStaleClearedCount = (payload.imageTasksStaleClearedCount || 0) + staleCleared;
+    }
+
+    return payload;
+  };
+
+  var recoverCompletedImageTasks = async function (payload, allTasks) {
+    if (!payload || !payload.stores) return payload;
+    var tasks = (allTasks || await fetchImageTasks())
+      .filter(function (task) {
+        return task && task.id && task.status === 'completed' && task.imageUrl;
+      });
     if (tasks.length === 0) return payload;
 
     var used = {};
@@ -464,7 +578,9 @@
       if (countPayloadItems(payload) === 0) return;
       payload = clearTransientGenerationFailures(payload);
       payload = recoverStaleGeneratingState(payload);
-      payload = await recoverCompletedImageTasks(payload);
+      var imageTasks = await fetchImageTasks();
+      payload = syncImageTaskState(payload, imageTasks);
+      payload = await recoverCompletedImageTasks(payload, imageTasks);
       payload = await materializePayloadMedia(payload);
 
       var signature = contentSignature(payload);
@@ -503,8 +619,10 @@
 
         if (serverPayload && countPayloadItems(serverPayload) > 0) {
           var localPayload = await exportPayload();
+          var imageTasks = await fetchImageTasks();
           serverPayload = recoverStaleGeneratingState(clearTransientGenerationFailures(serverPayload));
-          serverPayload = await recoverCompletedImageTasks(serverPayload);
+          serverPayload = syncImageTaskState(serverPayload, imageTasks);
+          serverPayload = await recoverCompletedImageTasks(serverPayload, imageTasks);
           var serverSignature = contentSignature(serverPayload);
           var localSignature = contentSignature(localPayload);
 

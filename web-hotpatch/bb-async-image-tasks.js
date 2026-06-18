@@ -85,6 +85,10 @@
     }
   };
 
+  var isTerminalTaskStatus = function (status) {
+    return status === 'completed' || status === 'failed' || status === 'canceled' || status === 'poll_error';
+  };
+
   var extractPromptFromGeminiBody = function (bodyText) {
     var body = parseJson(bodyText);
     if (typeof body.prompt === 'string' && body.prompt.trim()) return body.prompt.trim();
@@ -92,6 +96,18 @@
     var texts = [];
     (body.contents || []).forEach(function (content) {
       (content.parts || []).forEach(function (part) {
+        if (typeof part.text === 'string' && part.text.trim()) {
+          texts.push(part.text.trim());
+        }
+      });
+    });
+
+    (body.messages || []).forEach(function (message) {
+      if (typeof message.content === 'string' && message.content.trim()) {
+        texts.push(message.content.trim());
+        return;
+      }
+      (message.content || []).forEach(function (part) {
         if (typeof part.text === 'string' && part.text.trim()) {
           texts.push(part.text.trim());
         }
@@ -151,6 +167,24 @@
   var isGeminiFlashImageModel = function (model) {
     var apiModel = String((model && (model.apiModel || model.model || model.id)) || '').toLowerCase();
     return apiModel === 'gemini-3.1-flash-image';
+  };
+
+  var collectTaskMetadata = function (bodyText) {
+    var activeModel = getActiveImageModel() || {};
+    var pathMatch = String(window.location.pathname || '').match(/\/project\/([^/]+)(?:\/episode\/([^/]+))?/);
+    return {
+      pageUrl: window.location.href,
+      projectId: pathMatch ? decodeURIComponent(pathMatch[1]) : null,
+      episodeId: pathMatch && pathMatch[2] ? decodeURIComponent(pathMatch[2]) : null,
+      prompt: extractPromptFromGeminiBody(bodyText),
+      activeImageModel: activeModel ? {
+        id: activeModel.id || null,
+        name: activeModel.name || null,
+        apiModel: activeModel.apiModel || activeModel.model || null,
+        endpoint: activeModel.endpoint || null,
+        providerId: activeModel.providerId || null
+      } : null
+    };
   };
 
   var isImageGenerationRequest = function (url, method, bodyText) {
@@ -222,7 +256,8 @@
           headers: headersToObject(request.headers),
           body: upstreamBody,
           responseFormat: route.upstreamFormat
-        }
+        },
+        metadata: collectTaskMetadata(upstreamBody)
       })
     });
 
@@ -245,6 +280,34 @@
     return result.taskId;
   };
 
+  var enrichNewApiImageTaskRequest = function (request, bodyText) {
+    var parsed;
+    try {
+      parsed = new URL(request.url, window.location.href);
+    } catch (error) {
+      return null;
+    }
+    if (parsed.pathname !== '/api/new-api/image-tasks') return null;
+
+    var payload = parseJson(bodyText);
+    if (!payload || !payload.endpoint) return null;
+
+    var sourceBody = '';
+    try {
+      sourceBody = JSON.stringify(payload.payload || {});
+    } catch (error) {
+      sourceBody = bodyText;
+    }
+    if (!payload.metadata) payload.metadata = collectTaskMetadata(sourceBody);
+
+    var headers = new Headers(request.headers);
+    headers.set('Content-Type', 'application/json');
+    return new Request(request, {
+      body: JSON.stringify(payload),
+      headers: headers
+    });
+  };
+
   var pollTask = async function (taskId, signal) {
     for (;;) {
       var response = await originalFetch(TASK_ENDPOINT + '/' + encodeURIComponent(taskId) + '?includeDataUrl=1', {
@@ -262,6 +325,9 @@
       if (task && task.status === 'completed') return task;
       if (task && task.status === 'failed') {
         throw new Error(task.error || 'image task failed');
+      }
+      if (task && task.status === 'canceled') {
+        throw new Error(task.error || 'image task canceled');
       }
 
       if (signal && signal.aborted) {
@@ -317,8 +383,13 @@
   var resumeStoredTasks = function () {
     Object.keys(state.tasks || {}).forEach(function (taskId) {
       var task = state.tasks[taskId];
-      if (!task || task.status === 'completed' || task.status === 'failed') return;
+      if (!task || isTerminalTaskStatus(task.status)) return;
       pollTask(taskId, null).catch(function (error) {
+        var latest = state.tasks[taskId];
+        if (latest && isTerminalTaskStatus(latest.status)) {
+          saveStoredTasks();
+          return;
+        }
         state.tasks[taskId] = Object.assign({}, task, {
           id: taskId,
           status: 'poll_error',
@@ -332,7 +403,7 @@
   var hasActiveStoredTask = function () {
     return Object.keys(state.tasks || {}).some(function (taskId) {
       var task = state.tasks[taskId];
-      return task && task.status !== 'completed' && task.status !== 'failed' && task.status !== 'poll_error';
+      return task && !isTerminalTaskStatus(task.status);
     });
   };
 
@@ -341,7 +412,7 @@
 
     var changed = false;
     var markPending = function (item) {
-      if (!item || item.status !== 'generating') return item;
+      if (!item || (item.status !== 'generating' && item.status !== 'queued')) return item;
       if (item.referenceImage || item.imageUrl) return item;
       changed = true;
       return Object.assign({}, item, {
@@ -403,6 +474,12 @@
     }
 
     var route = isImageGenerationRequest(request.url, method, bodyText);
+    var enrichedRequest = method === 'POST' ? enrichNewApiImageTaskRequest(request, bodyText) : null;
+    if (enrichedRequest) {
+      recordDiagnostic('enrich-new-api-image-task', { url: request.url });
+      return originalFetch(enrichedRequest);
+    }
+
     if (!route) {
       return originalFetch(input, init);
     }
