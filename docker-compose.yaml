@@ -14,8 +14,7 @@ services:
       - ./web-hotpatch/bb-sidebar-toggle.js:/usr/share/nginx/html/bb-sidebar-toggle.js:ro
       - ./web-hotpatch/bb-project-store-sync.js:/usr/share/nginx/html/bb-project-store-sync.js:ro
       - ./web-hotpatch/bb-async-image-tasks.js:/usr/share/nginx/html/bb-async-image-tasks.js:ro
-      - ./web-hotpatch/assets/index-jpMSpFue.js:/usr/share/nginx/html/assets/index-jpMSpFue.js:ro
-      - ./web-hotpatch/assets/cutos-editor-lIBo6A3F.js:/usr/share/nginx/html/assets/cutos-editor-lIBo6A3F.js:ro
+      - ./web-hotpatch/assets:/usr/share/nginx/html/assets:ro
       - ./web-hotpatch/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
     restart: unless-stopped
 
