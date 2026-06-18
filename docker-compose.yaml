@@ -14,7 +14,33 @@ services:
       - ./web-hotpatch/bb-sidebar-toggle.js:/usr/share/nginx/html/bb-sidebar-toggle.js:ro
       - ./web-hotpatch/bb-project-store-sync.js:/usr/share/nginx/html/bb-project-store-sync.js:ro
       - ./web-hotpatch/bb-async-image-tasks.js:/usr/share/nginx/html/bb-async-image-tasks.js:ro
-      - ./web-hotpatch/assets:/usr/share/nginx/html/assets:ro
+      - ./web-hotpatch/assets/cutos-editor-lIBo6A3F.js:/usr/share/nginx/html/assets/cutos-editor-lIBo6A3F.js:ro
+      - ./web-hotpatch/assets/favicon-D7RNB3ts.ico:/usr/share/nginx/html/assets/favicon-D7RNB3ts.ico:ro
+      - ./web-hotpatch/assets/icons-oZkJq5vn.js:/usr/share/nginx/html/assets/icons-oZkJq5vn.js:ro
+      - ./web-hotpatch/assets/index-YggY4CaN.css:/usr/share/nginx/html/assets/index-YggY4CaN.css:ro
+      - ./web-hotpatch/assets/index-Zl-sIpQS.js:/usr/share/nginx/html/assets/index-Zl-sIpQS.js:ro
+      - ./web-hotpatch/assets/index-jpMSpFue.js:/usr/share/nginx/html/assets/index-jpMSpFue.js:ro
+      - ./web-hotpatch/assets/inter-latin-300-normal-BVlfKGgI.woff2:/usr/share/nginx/html/assets/inter-latin-300-normal-BVlfKGgI.woff2:ro
+      - ./web-hotpatch/assets/inter-latin-300-normal-i8F0SvXL.woff:/usr/share/nginx/html/assets/inter-latin-300-normal-i8F0SvXL.woff:ro
+      - ./web-hotpatch/assets/inter-latin-400-normal-C38fXH4l.woff2:/usr/share/nginx/html/assets/inter-latin-400-normal-C38fXH4l.woff2:ro
+      - ./web-hotpatch/assets/inter-latin-400-normal-CyCys3Eg.woff:/usr/share/nginx/html/assets/inter-latin-400-normal-CyCys3Eg.woff:ro
+      - ./web-hotpatch/assets/inter-latin-500-normal-BL9OpVg8.woff:/usr/share/nginx/html/assets/inter-latin-500-normal-BL9OpVg8.woff:ro
+      - ./web-hotpatch/assets/inter-latin-500-normal-Cerq10X2.woff2:/usr/share/nginx/html/assets/inter-latin-500-normal-Cerq10X2.woff2:ro
+      - ./web-hotpatch/assets/inter-latin-600-normal-CiBQ2DWP.woff:/usr/share/nginx/html/assets/inter-latin-600-normal-CiBQ2DWP.woff:ro
+      - ./web-hotpatch/assets/inter-latin-600-normal-LgqL8muc.woff2:/usr/share/nginx/html/assets/inter-latin-600-normal-LgqL8muc.woff2:ro
+      - ./web-hotpatch/assets/inter-latin-700-normal-BLAVimhd.woff:/usr/share/nginx/html/assets/inter-latin-700-normal-BLAVimhd.woff:ro
+      - ./web-hotpatch/assets/inter-latin-700-normal-Yt3aPRUw.woff2:/usr/share/nginx/html/assets/inter-latin-700-normal-Yt3aPRUw.woff2:ro
+      - ./web-hotpatch/assets/jetbrains-mono-latin-400-normal-6-qcROiO.woff:/usr/share/nginx/html/assets/jetbrains-mono-latin-400-normal-6-qcROiO.woff:ro
+      - ./web-hotpatch/assets/jetbrains-mono-latin-400-normal-V6pRDFza.woff2:/usr/share/nginx/html/assets/jetbrains-mono-latin-400-normal-V6pRDFza.woff2:ro
+      - ./web-hotpatch/assets/jetbrains-mono-latin-500-normal-BWZEU5yA.woff2:/usr/share/nginx/html/assets/jetbrains-mono-latin-500-normal-BWZEU5yA.woff2:ro
+      - ./web-hotpatch/assets/jetbrains-mono-latin-500-normal-CJOVTJB7.woff:/usr/share/nginx/html/assets/jetbrains-mono-latin-500-normal-CJOVTJB7.woff:ro
+      - ./web-hotpatch/assets/jetbrains-mono-latin-700-normal-BYuf6tUa.woff2:/usr/share/nginx/html/assets/jetbrains-mono-latin-700-normal-BYuf6tUa.woff2:ro
+      - ./web-hotpatch/assets/jetbrains-mono-latin-700-normal-D3wTyLJW.woff:/usr/share/nginx/html/assets/jetbrains-mono-latin-700-normal-D3wTyLJW.woff:ro
+      - ./web-hotpatch/assets/jszip.min-D45BihOG.js:/usr/share/nginx/html/assets/jszip.min-D45BihOG.js:ro
+      - ./web-hotpatch/assets/logo-DcGaLCiQ.png:/usr/share/nginx/html/assets/logo-DcGaLCiQ.png:ro
+      - ./web-hotpatch/assets/qrcode-BqmVQu-P.jpg:/usr/share/nginx/html/assets/qrcode-BqmVQu-P.jpg:ro
+      - ./web-hotpatch/assets/react-uS-d4TUT.js:/usr/share/nginx/html/assets/react-uS-d4TUT.js:ro
+      - ./web-hotpatch/assets/zip-H7LeIjUY.js:/usr/share/nginx/html/assets/zip-H7LeIjUY.js:ro
       - ./web-hotpatch/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
     restart: unless-stopped
 
