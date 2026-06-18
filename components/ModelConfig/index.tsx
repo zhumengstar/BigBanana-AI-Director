@@ -3,33 +3,20 @@
  * 独立的模型管理界面
  */
 
-import React, { useRef, useState, useEffect } from 'react';
-import { X, Settings, MessageSquare, Image, Video, Key, ExternalLink, Gift, Sparkles } from 'lucide-react';
-import { ModelType, ModelDefinition } from '../../types/model';
-import {
-  getRegistryState,
-  getModels,
-  getActiveModelsConfig,
-  setActiveModel,
-  updateModel,
-  registerModel,
-  removeModel,
-  getGlobalApiKey,
-  setGlobalApiKey,
-} from '../../services/modelRegistry';
-import { verifyApiKey } from '../../services/modelService';
+import React, { useRef, useState } from 'react';
+import { X, Settings, MessageSquare, Image, Video, Mic } from 'lucide-react';
+import { ModelType } from '../../types/model';
 import ModelList from './ModelList';
-import GlobalSettings from './GlobalSettings';
 
 interface ModelConfigModalProps {
   isOpen: boolean;
   onClose: () => void;
 }
 
-type TabType = 'global' | 'chat' | 'image' | 'video';
+type TabType = ModelType;
 
 const ModelConfigModal: React.FC<ModelConfigModalProps> = ({ isOpen, onClose }) => {
-  const [activeTab, setActiveTab] = useState<TabType>('global');
+  const [activeTab, setActiveTab] = useState<TabType>('chat');
   const [refreshKey, setRefreshKey] = useState(0);
   const modalRef = useRef<HTMLDivElement | null>(null);
   const pointerDownOutsideRef = useRef(false);
@@ -39,10 +26,10 @@ const ModelConfigModal: React.FC<ModelConfigModalProps> = ({ isOpen, onClose }) 
   if (!isOpen) return null;
 
   const tabs: { id: TabType; label: string; icon: React.ReactNode }[] = [
-    { id: 'global', label: '全局配置', icon: <Key className="w-4 h-4" /> },
     { id: 'chat', label: '对话模型', icon: <MessageSquare className="w-4 h-4" /> },
     { id: 'image', label: '图片模型', icon: <Image className="w-4 h-4" /> },
     { id: 'video', label: '视频模型', icon: <Video className="w-4 h-4" /> },
+    { id: 'audio', label: '音频模型', icon: <Mic className="w-4 h-4" /> },
   ];
 
   return (
@@ -113,14 +100,10 @@ const ModelConfigModal: React.FC<ModelConfigModalProps> = ({ isOpen, onClose }) 
 
         {/* 内容区域 */}
         <div className="flex-1 overflow-y-auto p-6" key={refreshKey}>
-          {activeTab === 'global' ? (
-            <GlobalSettings onRefresh={refresh} />
-          ) : (
-            <ModelList 
-              type={activeTab as ModelType} 
-              onRefresh={refresh}
-            />
-          )}
+          <ModelList
+            type={activeTab}
+            onRefresh={refresh}
+          />
         </div>
 
         {/* 底部 */}

@@ -12,11 +12,15 @@ import {
   ChatModelDefinition,
   ImageModelDefinition,
   VideoModelDefinition,
+  AudioModelDefinition,
   BUILTIN_PROVIDERS,
   ALL_BUILTIN_MODELS,
   DEFAULT_ACTIVE_MODELS,
   AspectRatio,
   VideoDuration,
+  DEFAULT_CHAT_PARAMS,
+  DEFAULT_IMAGE_PARAMS,
+  DEFAULT_VIDEO_PARAMS_SORA,
 } from '../types/model';
 
 // localStorage 键名
@@ -25,6 +29,21 @@ const API_KEY_STORAGE_KEY = 'antsk_api_key';
 
 // 规范化 URL（去尾部斜杠、转小写）用于去重
 const normalizeBaseUrl = (url: string): string => url.trim().replace(/\/+$/, '').toLowerCase();
+
+const emptyProvider: ModelProvider = {
+  id: '',
+  name: '',
+  baseUrl: '',
+  isBuiltIn: false,
+  isDefault: false,
+};
+
+const MODEL_TYPE_PROVIDER_IDS: Record<ModelType, string> = {
+  chat: 'custom-chat-provider',
+  image: 'custom-image-provider',
+  video: 'custom-video-provider',
+  audio: 'custom-audio-provider',
+};
 
 // 运行时状态缓存
 let registryState: ModelRegistryState | null = null;
@@ -40,7 +59,7 @@ const getDefaultState = (): ModelRegistryState => ({
   providers: [...BUILTIN_PROVIDERS],
   models: [...ALL_BUILTIN_MODELS],
   activeModels: { ...DEFAULT_ACTIVE_MODELS },
-  globalApiKey: localStorage.getItem(API_KEY_STORAGE_KEY) || undefined,
+  globalApiKey: undefined,
 });
 
 /**
@@ -66,66 +85,21 @@ export const loadRegistry = (): ModelRegistryState => {
         'veo_3_1_i2v_s_fast_fl_portrait',
       ];
       
-      // 确保内置模型和提供商始终存在
-      const builtInProviderIds = BUILTIN_PROVIDERS.map(p => p.id);
-      const builtInModelIds = ALL_BUILTIN_MODELS.map(m => m.id);
+      parsed.providers = Array.isArray(parsed.providers) ? parsed.providers : [];
+      parsed.models = Array.isArray(parsed.models) ? parsed.models : [];
+      parsed.activeModels = {
+        ...DEFAULT_ACTIVE_MODELS,
+        ...(parsed.activeModels || {}),
+      };
+      delete (parsed as any).globalApiKey;
       
-      // 合并内置提供商
-      const existingProviderIds = parsed.providers.map(p => p.id);
-      BUILTIN_PROVIDERS.forEach(bp => {
-        if (!existingProviderIds.includes(bp.id)) {
-          parsed.providers.unshift(bp);
-        }
-      });
+      const providerCountBeforeBuiltInCleanup = parsed.providers.length;
+      const modelCountBeforeBuiltInCleanup = parsed.models.length;
 
-      // 按 baseUrl 去重提供商（保留先出现的项，通常为内置）
-      const seenBaseUrls = new Set<string>();
-      parsed.providers = parsed.providers.filter(p => {
-        const key = normalizeBaseUrl(p.baseUrl);
-        if (seenBaseUrls.has(key)) return false;
-        seenBaseUrls.add(key);
-        return true;
-      });
+      // 内置模型/提供商已移除，迁移时清理历史内置项。
+      parsed.providers = parsed.providers.filter(p => !p.isBuiltIn);
+      parsed.models = parsed.models.filter(m => !m.isBuiltIn);
       
-      // 合并内置模型，并确保内置模型的参数与代码保持同步
-      const existingModelIds = parsed.models.map(m => m.id);
-      ALL_BUILTIN_MODELS.forEach(bm => {
-        const existingIndex = parsed.models.findIndex(m => m.id === bm.id);
-        if (existingIndex === -1) {
-          // 内置模型不存在，添加
-          parsed.models.push(bm);
-        } else {
-          // 内置模型已存在：以代码定义为基础，保留用户的个性化设置
-          const existing = parsed.models[existingIndex];
-          // 用户可调整的偏好参数（defaultAspectRatio, temperature, maxTokens, defaultDuration 等）
-          // 结构性参数（supportedAspectRatios, supportedDurations, mode 等）始终从代码同步
-          const USER_PREF_KEYS = ['defaultAspectRatio', 'temperature', 'maxTokens', 'defaultDuration'];
-          const mergedParams = { ...(bm as any).params };
-          const existingParams = (existing as any).params;
-          if (existingParams) {
-            for (const key of USER_PREF_KEYS) {
-              if (key in existingParams && existingParams[key] !== undefined) {
-                if (key === 'defaultDuration') {
-                  const candidate = existingParams[key];
-                  const supported = (mergedParams as any).supportedDurations;
-                  if (Array.isArray(supported) && !supported.includes(candidate)) {
-                    continue;
-                  }
-                }
-                mergedParams[key] = existingParams[key];
-              }
-            }
-          }
-          parsed.models[existingIndex] = {
-            ...bm,
-            isEnabled: existing.isEnabled,
-            // Keep user-configured model-level API key for built-in models.
-            apiKey: existing.apiKey?.trim() || undefined,
-            params: mergedParams as any,
-          };
-        }
-      });
-
       // 迁移缺失的 apiModel（优先从 id 或 providerId 前缀推断）
       parsed.models = parsed.models.map(m => {
         if (m.apiModel) return m;
@@ -149,17 +123,22 @@ export const loadRegistry = (): ModelRegistryState => {
         parsed.activeModels.video === 'veo_3_1' ||
         parsed.activeModels.video?.startsWith('veo_3_1_')
       ) {
-        parsed.activeModels.video = 'veo';
+        parsed.activeModels.video = '';
         activeModelMigrated = true;
       }
       
-      // 同步全局 API Key
-      parsed.globalApiKey = localStorage.getItem(API_KEY_STORAGE_KEY) || parsed.globalApiKey;
+      if (localStorage.getItem(API_KEY_STORAGE_KEY)) {
+        localStorage.removeItem(API_KEY_STORAGE_KEY);
+      }
       
       registryState = parsed;
 
       // 如果发生了迁移，立即回写 localStorage，避免每次加载都重复执行
-      if (modelsRemoved > 0 || activeModelMigrated) {
+      const builtInItemsRemoved =
+        providerCountBeforeBuiltInCleanup !== parsed.providers.length ||
+        modelCountBeforeBuiltInCleanup !== parsed.models.length;
+
+      if (builtInItemsRemoved || modelsRemoved > 0 || activeModelMigrated) {
         try {
           localStorage.setItem(STORAGE_KEY, JSON.stringify(parsed));
           console.log(`🔄 模型注册中心迁移完成：清理 ${modelsRemoved} 个废弃模型`);
@@ -228,7 +207,7 @@ export const getProviderById = (id: string): ModelProvider | undefined => {
  * 获取默认提供商
  */
 export const getDefaultProvider = (): ModelProvider => {
-  return getProviders().find(p => p.isDefault) || BUILTIN_PROVIDERS[0];
+  return getProviders().find(p => p.isDefault) || getProviders()[0] || emptyProvider;
 };
 
 /**
@@ -324,6 +303,13 @@ export const getVideoModels = (): VideoModelDefinition[] => {
 };
 
 /**
+ * 获取音频模型列表
+ */
+export const getAudioModels = (): AudioModelDefinition[] => {
+  return getModels('audio') as AudioModelDefinition[];
+};
+
+/**
  * 根据 ID 获取模型
  */
 export const getModelById = (id: string): ModelDefinition | undefined => {
@@ -358,6 +344,13 @@ export const getActiveImageModel = (): ImageModelDefinition | undefined => {
  */
 export const getActiveVideoModel = (): VideoModelDefinition | undefined => {
   return getActiveModel('video') as VideoModelDefinition | undefined;
+};
+
+/**
+ * 获取当前激活的音频模型
+ */
+export const getActiveAudioModel = (): AudioModelDefinition | undefined => {
+  return getActiveModel('audio') as AudioModelDefinition | undefined;
 };
 
 /**
@@ -475,7 +468,7 @@ export const toggleModelEnabled = (id: string, enabled: boolean): boolean => {
  * 获取全局 API Key
  */
 export const getGlobalApiKey = (): string | undefined => {
-  return loadRegistry().globalApiKey || localStorage.getItem(API_KEY_STORAGE_KEY) || undefined;
+  return undefined;
 };
 
 /**
@@ -483,8 +476,8 @@ export const getGlobalApiKey = (): string | undefined => {
  */
 export const setGlobalApiKey = (apiKey: string): void => {
   const state = loadRegistry();
-  state.globalApiKey = apiKey;
-  localStorage.setItem(API_KEY_STORAGE_KEY, apiKey);
+  state.globalApiKey = undefined;
+  localStorage.removeItem(API_KEY_STORAGE_KEY);
   saveRegistry(state);
 };
 
@@ -508,7 +501,7 @@ export const getApiKeyForModel = (modelId: string): string | undefined => {
   }
   
   // 3. 最后使用全局 API Key
-  return getGlobalApiKey();
+  return undefined;
 };
 
 /**
@@ -516,12 +509,129 @@ export const getApiKeyForModel = (modelId: string): string | undefined => {
  */
 export const getApiBaseUrlForModel = (modelId: string): string => {
   const model = getModelById(modelId);
-  if (!model) return BUILTIN_PROVIDERS[0].baseUrl.replace(/\/+$/, '');
+  if (!model) return '';
   
   const provider = getProviderById(model.providerId);
-  const baseUrl = provider?.baseUrl || BUILTIN_PROVIDERS[0].baseUrl;
+  const baseUrl = provider?.baseUrl || '';
   return baseUrl.replace(/\/+$/, '');
 };
+
+const defaultEndpointForType = (type: ModelType): string => {
+  switch (type) {
+    case 'chat':
+      return '/v1/chat/completions';
+    case 'image':
+      return '/v1/images/generations';
+    case 'video':
+      return '/v1/videos';
+    case 'audio':
+      return '/v1/audio/speech';
+  }
+};
+
+const defaultParamsForType = (type: ModelType): any => {
+  switch (type) {
+    case 'chat':
+      return { ...DEFAULT_CHAT_PARAMS };
+    case 'image':
+      return {
+        ...DEFAULT_IMAGE_PARAMS,
+        supportedAspectRatios: ['16:9', '9:16', '1:1'],
+      };
+    case 'video':
+      return { ...DEFAULT_VIDEO_PARAMS_SORA };
+    case 'audio':
+      return { defaultVoice: 'alloy', outputFormat: 'mp3' };
+  }
+};
+
+const displayNameForType = (type: ModelType): string => {
+  switch (type) {
+    case 'chat':
+      return '对话模型 API';
+    case 'image':
+      return '图片模型 API';
+    case 'video':
+      return '视频模型 API';
+    case 'audio':
+      return '音频模型 API';
+  }
+};
+
+export interface TypeModelConfigurationInput {
+  type: ModelType;
+  baseUrl: string;
+  apiKey: string;
+  apiModel: string;
+  endpoint?: string;
+  displayName?: string;
+}
+
+/**
+ * 按模型类型保存一套 API 地址、API Key 和选中模型。
+ */
+export const saveTypeModelConfiguration = (input: TypeModelConfigurationInput): ModelDefinition => {
+  const state = loadRegistry();
+  const providerId = MODEL_TYPE_PROVIDER_IDS[input.type];
+  const baseUrl = input.baseUrl.trim().replace(/\/+$/, '');
+  const apiKey = input.apiKey.trim();
+  const apiModel = input.apiModel.trim();
+  const modelId = `${input.type}:${apiModel}`;
+  const now = Date.now();
+
+  if (!baseUrl || !apiKey || !apiModel) {
+    throw new Error('API 地址、API Key 和模型名称都不能为空');
+  }
+
+  const providerIndex = state.providers.findIndex(p => p.id === providerId);
+  const provider: ModelProvider = {
+    id: providerId,
+    name: displayNameForType(input.type),
+    baseUrl,
+    apiKey,
+    isBuiltIn: false,
+    isDefault: false,
+  };
+  if (providerIndex === -1) {
+    state.providers.push(provider);
+  } else {
+    state.providers[providerIndex] = {
+      ...state.providers[providerIndex],
+      ...provider,
+    };
+  }
+
+  state.models = state.models.filter(m => m.type !== input.type || m.id === modelId);
+
+  const model: ModelDefinition = {
+    id: modelId,
+    apiModel,
+    name: input.displayName?.trim() || apiModel,
+    type: input.type,
+    providerId,
+    endpoint: input.endpoint?.trim() || defaultEndpointForType(input.type),
+    description: `自定义 ${displayNameForType(input.type)} · ${new Date(now).toLocaleString()}`,
+    isBuiltIn: false,
+    isEnabled: true,
+    params: defaultParamsForType(input.type),
+  } as ModelDefinition;
+
+  const existingIndex = state.models.findIndex(m => m.id === modelId);
+  if (existingIndex === -1) {
+    state.models.push(model);
+  } else {
+    state.models[existingIndex] = {
+      ...state.models[existingIndex],
+      ...model,
+    } as ModelDefinition;
+  }
+
+  state.activeModels[input.type] = modelId;
+  saveRegistry(state);
+  return model;
+};
+
+export const getTypeProviderId = (type: ModelType): string => MODEL_TYPE_PROVIDER_IDS[type];
 
 // ============================================
 // 辅助函数

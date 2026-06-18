@@ -16,6 +16,7 @@ import {
   getChatModels,
   getImageModels,
   getVideoModels,
+  getAudioModels,
 } from '../services/modelRegistry';
 
 interface ModelSelectorProps {
@@ -31,6 +32,7 @@ const typeLabels: Record<ModelType, string> = {
   chat: '对话模型',
   image: '图片模型',
   video: '视频模型',
+  audio: '音频模型',
 };
 
 const ModelSelector: React.FC<ModelSelectorProps> = ({
@@ -53,6 +55,9 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({
         break;
       case 'video':
         models = getVideoModels();
+        break;
+      case 'audio':
+        models = getAudioModels();
         break;
     }
     return models.filter(m => m.isEnabled);

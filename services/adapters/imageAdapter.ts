@@ -73,6 +73,81 @@ const buildImageApiError = (status: number, backendMessage?: string): Error => {
   return err;
 };
 
+const blobToDataUrl = (blob: Blob): Promise<string> => new Promise((resolve, reject) => {
+  const reader = new FileReader();
+  reader.onloadend = () => {
+    if (typeof reader.result === 'string') {
+      resolve(reader.result);
+    } else {
+      reject(new Error('图片读取失败'));
+    }
+  };
+  reader.onerror = () => reject(new Error('图片读取失败'));
+  reader.readAsDataURL(blob);
+});
+
+const remoteImageToDataUrl = async (url: string): Promise<string> => {
+  if (url.startsWith('data:')) return url;
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`图片下载失败: ${response.status}`);
+  }
+  return blobToDataUrl(await response.blob());
+};
+
+const extractImageDataUrl = async (response: any): Promise<string> => {
+  const geminiParts = response?.candidates?.flatMap((candidate: any) => candidate?.content?.parts || []) || [];
+  for (const part of geminiParts) {
+    if (part?.inlineData?.data) {
+      return `data:${part.inlineData.mimeType || 'image/png'};base64,${part.inlineData.data}`;
+    }
+  }
+
+  const firstData = Array.isArray(response?.data) ? response.data[0] : null;
+  if (firstData?.b64_json) {
+    return `data:${firstData.mime_type || firstData.mimeType || 'image/png'};base64,${firstData.b64_json}`;
+  }
+  if (firstData?.url) {
+    return remoteImageToDataUrl(firstData.url);
+  }
+
+  const choices = Array.isArray(response?.choices) ? response.choices : [];
+  for (const choice of choices) {
+    const images = Array.isArray(choice?.message?.images) ? choice.message.images : [];
+    for (const image of images) {
+      const url = image?.image_url?.url || image?.url;
+      if (typeof url === 'string' && url.trim()) {
+        return remoteImageToDataUrl(url.trim());
+      }
+    }
+
+    const content = choice?.message?.content;
+    const contentItems = Array.isArray(content) ? content : [];
+    for (const item of contentItems) {
+      const url = item?.image_url?.url || item?.image_url || item?.url;
+      if (typeof url === 'string' && url.trim()) {
+        return remoteImageToDataUrl(url.trim());
+      }
+    }
+  }
+
+  const outputItems = Array.isArray(response?.output) ? response.output : [];
+  for (const item of outputItems) {
+    const contentItems = Array.isArray(item?.content) ? item.content : [];
+    for (const content of contentItems) {
+      if (content?.image_base64) {
+        return `data:${content.mime_type || 'image/png'};base64,${content.image_base64}`;
+      }
+      const url = content?.image_url || content?.url;
+      if (typeof url === 'string' && url.trim()) {
+        return remoteImageToDataUrl(url.trim());
+      }
+    }
+  }
+
+  throw new Error('图片生成失败：接口未返回有效图片数据。');
+};
+
 const MAX_IMAGE_PROMPT_CHARS = 5000;
 
 const truncatePromptToMaxChars = (
@@ -157,6 +232,68 @@ export const callImageApi = async (
   }
   finalPrompt = promptLimitResult.text;
 
+  const normalizedEndpoint = endpoint.toLowerCase();
+  const normalizedModel = apiModel.toLowerCase();
+  const isOpenAiImagesEndpoint =
+    normalizedEndpoint.includes('/v1/images/generations') ||
+    normalizedModel.includes('gpt-image');
+  const isOpenAiChatImageEndpoint =
+    normalizedEndpoint.includes('/v1/chat/completions') ||
+    normalizedModel.includes('gemini-3.1-flash-image');
+
+  if (isOpenAiImagesEndpoint && !isOpenAiChatImageEndpoint) {
+    const response = await retryOperation(async () => {
+      const res = await fetch(`${apiBase}${endpoint}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+          model: apiModel,
+          prompt: finalPrompt,
+          n: 1,
+          size: '1024x1024',
+        }),
+      });
+
+      if (!res.ok) {
+        const backendMessage = await parseHttpErrorBody(res);
+        throw buildImageApiError(res.status, backendMessage);
+      }
+
+      return await res.json();
+    });
+
+    return extractImageDataUrl(response);
+  }
+
+  if (isOpenAiChatImageEndpoint) {
+    const content: any = finalPrompt;
+    const response = await retryOperation(async () => {
+      const res = await fetch(`${apiBase}${endpoint}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+          model: apiModel,
+          messages: [{ role: 'user', content }],
+        }),
+      });
+
+      if (!res.ok) {
+        const backendMessage = await parseHttpErrorBody(res);
+        throw buildImageApiError(res.status, backendMessage);
+      }
+
+      return await res.json();
+    });
+
+    return extractImageDataUrl(response);
+  }
+
   // 构建请求 parts
   const parts: any[] = [{ text: finalPrompt }];
 
@@ -213,19 +350,9 @@ export const callImageApi = async (
     return await res.json();
   });
 
-  // 提取 base64 图片
-  const candidates = response.candidates || [];
-  if (candidates.length > 0 && candidates[0].content && candidates[0].content.parts) {
-    for (const part of candidates[0].content.parts) {
-      if (part.inlineData) {
-        return `data:image/png;base64,${part.inlineData.data}`;
-      }
-    }
-  }
-
   const hasSafetyBlock =
     !!response?.promptFeedback?.blockReason ||
-    candidates.some((candidate: any) => {
+    (response.candidates || []).some((candidate: any) => {
       const finishReason = String(candidate?.finishReason || '').toUpperCase();
       return finishReason.includes('SAFETY') || finishReason.includes('BLOCK');
     });
@@ -234,7 +361,7 @@ export const callImageApi = async (
     throw new Error('图片生成失败：提示词可能被风控拦截，请修改提示词后重试。');
   }
 
-  throw new Error('图片生成失败：未返回有效图片数据，请重试或调整提示词。');
+  return extractImageDataUrl(response);
 };
 
 /**

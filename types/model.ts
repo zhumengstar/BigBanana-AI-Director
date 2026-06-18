@@ -10,7 +10,7 @@
 /**
  * 模型类型
  */
-export type ModelType = 'chat' | 'image' | 'video';
+export type ModelType = 'chat' | 'image' | 'video' | 'audio';
 
 /**
  * 横竖屏比例类型
@@ -62,9 +62,17 @@ export interface VideoModelParams {
 }
 
 /**
+ * 音频模型参数
+ */
+export interface AudioModelParams {
+  defaultVoice?: string;
+  outputFormat?: 'mp3' | 'wav' | 'opus' | 'aac' | 'flac';
+}
+
+/**
  * 模型参数联合类型
  */
-export type ModelParams = ChatModelParams | ImageModelParams | VideoModelParams;
+export type ModelParams = ChatModelParams | ImageModelParams | VideoModelParams | AudioModelParams;
 
 // ============================================
 // 模型定义
@@ -111,9 +119,17 @@ export interface VideoModelDefinition extends ModelDefinitionBase {
 }
 
 /**
+ * 音频模型定义
+ */
+export interface AudioModelDefinition extends ModelDefinitionBase {
+  type: 'audio';
+  params: AudioModelParams;
+}
+
+/**
  * 模型定义联合类型
  */
-export type ModelDefinition = ChatModelDefinition | ImageModelDefinition | VideoModelDefinition;
+export type ModelDefinition = ChatModelDefinition | ImageModelDefinition | VideoModelDefinition | AudioModelDefinition;
 
 // ============================================
 // 提供商定义
@@ -142,6 +158,7 @@ export interface ActiveModels {
   chat: string;                  // 当前激活的对话模型 ID
   image: string;                 // 当前激活的图片模型 ID
   video: string;                 // 当前激活的视频模型 ID
+  audio: string;                 // 当前激活的音频模型 ID
 }
 
 /**
@@ -263,148 +280,27 @@ export const DEFAULT_VIDEO_PARAMS_DOUBAO_SEEDANCE: VideoModelParams = {
 /**
  * 内置对话模型列表
  */
-export const BUILTIN_CHAT_MODELS: ChatModelDefinition[] = [
-  {
-    id: 'gpt-5.1',
-    name: 'GPT-5.1',
-    type: 'chat',
-    providerId: 'antsk',
-    description: '剧情脚本切分首选：结构化输出稳定，适合分场/分镜、提取人物与事件',
-    isBuiltIn: true,
-    isEnabled: true,
-    params: { ...DEFAULT_CHAT_PARAMS },
-  },
-  {
-    id: 'gpt-5.2',
-    name: 'GPT-5.2',
-    type: 'chat',
-    providerId: 'antsk',
-    description: '创意增强型切分：更适合提供多种切分方案、改写节奏与镜头建议（一致性略弱）',
-    isBuiltIn: true,
-    isEnabled: true,
-    params: { ...DEFAULT_CHAT_PARAMS },
-  },
-  {
-    id: 'gpt-41',
-    name: 'GPT-4.1',
-    type: 'chat',
-    providerId: 'antsk',
-    description: '严谨切分：对复杂叙事与长文本更稳，适合时间线梳理、因果关系与要点校对',
-    isBuiltIn: true,
-    isEnabled: true,
-    params: { ...DEFAULT_CHAT_PARAMS },
-  },
-  {
-    id: 'claude-sonnet-4-5-20250929',
-    name: 'Claude Sonnet 4.5',
-    type: 'chat',
-    providerId: 'antsk',
-    description: '长文友好：适合长篇剧本的分段、摘要与角色弧线整理，文字表达更细腻',
-    isBuiltIn: true,
-    isEnabled: true,
-    params: { ...DEFAULT_CHAT_PARAMS },
-  },
-];
+export const BUILTIN_CHAT_MODELS: ChatModelDefinition[] = [];
 
 /**
  * 内置图片模型列表
  */
-export const BUILTIN_IMAGE_MODELS: ImageModelDefinition[] = [
-  {
-    id: 'gemini-3-pro-image-preview',
-    name: 'Gemini 3 Pro Image(Nano Banana Pro)',
-    type: 'image',
-    providerId: 'antsk',
-    endpoint: '/v1beta/models/gemini-3-pro-image-preview:generateContent',
-    description: 'Google Nano Banana Pro 图片生成模型',
-    isBuiltIn: true,
-    isEnabled: true,
-    params: { ...DEFAULT_IMAGE_PARAMS },
-  },
-];
+export const BUILTIN_IMAGE_MODELS: ImageModelDefinition[] = [];
 
 /**
  * 内置视频模型列表
  */
-export const BUILTIN_VIDEO_MODELS: VideoModelDefinition[] = [
-  {
-    id: 'veo',
-    name: 'Veo 3.1 首尾帧',
-    type: 'video',
-    providerId: 'antsk',
-    endpoint: '/v1/chat/completions',
-    description: 'Veo 3.1 首尾帧模式，需要起始帧和结束帧',
-    isBuiltIn: true,
-    isEnabled: true,
-    params: { ...DEFAULT_VIDEO_PARAMS_VEO },
-  },
-  {
-    id: 'veo_3_1-fast',
-    name: 'Veo 3.1 Fast',
-    type: 'video',
-    providerId: 'antsk',
-    endpoint: '/v1/videos',
-    description: '异步模式，支持横屏/竖屏、支持单图和首尾帧，固定 8 秒时长,价格便宜速度快',
-    isBuiltIn: true,
-    isEnabled: true,
-    params: { ...DEFAULT_VIDEO_PARAMS_VEO_FAST },
-  },
-  {
-    id: 'sora-2',
-    name: 'Sora-2',
-    type: 'video',
-    providerId: 'antsk',
-    endpoint: '/v1/videos',
-    description: 'OpenAI Sora 视频生成，异步模式，支持多种时长',
-    isBuiltIn: true,
-    isEnabled: true,
-    params: { ...DEFAULT_VIDEO_PARAMS_SORA },
-  },
-  {
-    id: 'doubao-seedance-1-5-pro-251215',
-    apiModel: 'doubao-seedance-1-5-pro-251215',
-    name: 'Doubao Seedance 1.5 Pro',
-    type: 'video',
-    providerId: 'volcengine',
-    endpoint: '/api/v3/contents/generations/tasks',
-    description: '火山引擎异步任务模式（create task + poll task），支持 5/10/15 秒',
-    isBuiltIn: true,
-    isEnabled: true,
-    params: { ...DEFAULT_VIDEO_PARAMS_DOUBAO_SEEDANCE },
-  },
-  {
-    id: 'doubao-seedance-2-0-260128',
-    apiModel: 'doubao-seedance-2-0-260128',
-    name: 'Doubao Seedance 2.0',
-    type: 'video',
-    providerId: 'volcengine',
-    endpoint: '/api/v3/contents/generations/tasks',
-    description: '火山引擎异步任务模式（create task + poll task），支持 5/10/15 秒',
-    isBuiltIn: true,
-    isEnabled: true,
-    params: { ...DEFAULT_VIDEO_PARAMS_DOUBAO_SEEDANCE },
-  },
-];
+export const BUILTIN_VIDEO_MODELS: VideoModelDefinition[] = [];
+
+/**
+ * 内置音频模型列表
+ */
+export const BUILTIN_AUDIO_MODELS: AudioModelDefinition[] = [];
 
 /**
  * 内置提供商列表
  */
-export const BUILTIN_PROVIDERS: ModelProvider[] = [
-  {
-    id: 'antsk',
-    name: 'BigBanana API (api.antsk.cn)',
-    baseUrl: 'https://api.antsk.cn',
-    isBuiltIn: true,
-    isDefault: true,
-  },
-  {
-    id: 'volcengine',
-    name: 'Volcengine Ark',
-    baseUrl: 'https://ark.cn-beijing.volces.com',
-    isBuiltIn: true,
-    isDefault: false,
-  },
-];
+export const BUILTIN_PROVIDERS: ModelProvider[] = [];
 
 /**
  * 所有内置模型
@@ -413,13 +309,15 @@ export const ALL_BUILTIN_MODELS: ModelDefinition[] = [
   ...BUILTIN_CHAT_MODELS,
   ...BUILTIN_IMAGE_MODELS,
   ...BUILTIN_VIDEO_MODELS,
+  ...BUILTIN_AUDIO_MODELS,
 ];
 
 /**
  * 默认激活模型
  */
 export const DEFAULT_ACTIVE_MODELS: ActiveModels = {
-  chat: 'gpt-5.2',
-  image: 'gemini-3-pro-image-preview',
-  video: 'sora-2',
+  chat: '',
+  image: '',
+  video: '',
+  audio: '',
 };
