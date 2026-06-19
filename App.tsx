@@ -326,7 +326,7 @@ function EpisodeWorkspace() {
         })()}
         {renderStage()}
         {showSaveStatus && (
-          <div className="absolute top-4 right-6 pointer-events-none flex items-center gap-2 text-xs font-mono text-[var(--text-tertiary)] bg-[var(--overlay-medium)] px-2 py-1 rounded-full backdrop-blur-sm z-50">
+          <div className="absolute top-4 left-1/2 -translate-x-1/2 pointer-events-none flex items-center gap-2 text-xs font-mono text-[var(--text-tertiary)] bg-[var(--overlay-medium)] px-2 py-1 rounded-full backdrop-blur-sm z-50">
             {saveStatus === 'saving' ? (
               <><Save className="w-3 h-3 animate-pulse" />保存中...</>
             ) : saveStatus === 'unsaved' ? (
