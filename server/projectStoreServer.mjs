@@ -178,6 +178,12 @@ const emptyModelConfig = () => ({
     video: '',
     audio: '',
   },
+  activeModelChains: {
+    chat: [],
+    image: [],
+    video: [],
+    audio: [],
+  },
   updatedAt: null,
 });
 
@@ -224,12 +230,28 @@ const normalizeModelConfigPayload = (payload) => {
     video: String(source.activeModels?.video || '').trim(),
     audio: String(source.activeModels?.audio || '').trim(),
   };
+  const activeModelChains = {
+    chat: Array.isArray(source.activeModelChains?.chat) ? source.activeModelChains.chat.map(item => String(item || '').trim()).filter(Boolean) : [],
+    image: Array.isArray(source.activeModelChains?.image) ? source.activeModelChains.image.map(item => String(item || '').trim()).filter(Boolean) : [],
+    video: Array.isArray(source.activeModelChains?.video) ? source.activeModelChains.video.map(item => String(item || '').trim()).filter(Boolean) : [],
+    audio: Array.isArray(source.activeModelChains?.audio) ? source.activeModelChains.audio.map(item => String(item || '').trim()).filter(Boolean) : [],
+  };
+
+  Object.keys(activeModels).forEach((type) => {
+    if (!activeModels[type] && activeModelChains[type]?.[0]) {
+      activeModels[type] = activeModelChains[type][0];
+    }
+    if (activeModels[type] && !activeModelChains[type].includes(activeModels[type])) {
+      activeModelChains[type] = [activeModels[type], ...activeModelChains[type]];
+    }
+  });
 
   return {
     version: 1,
     providers,
     models,
     activeModels,
+    activeModelChains,
     updatedAt: Date.now(),
   };
 };
@@ -507,6 +529,33 @@ const authorizationForTaskUpstream = async ({
   return bearerAuthorization(providedAuthorization);
 };
 
+const endpointBaseUrlForImageTask = async ({
+  providedEndpoint,
+  sourceBody,
+  metadata,
+  imageModel,
+}) => {
+  const explicitEndpoint = String(providedEndpoint || '').trim().replace(/\/+$/, '');
+  if (explicitEndpoint) return explicitEndpoint;
+
+  const config = await readModelConfigSafely();
+  const configuredModel = findModelByCandidate(config, [
+    sourceBody?.model,
+    metadata?.activeImageModel?.id,
+    metadata?.activeImageModel?.apiModel,
+    metadata?.resolvedImageModel?.id,
+    metadata?.resolvedImageModel?.apiModel,
+    imageModel?.id,
+    imageModel?.apiModel,
+  ]);
+
+  const provider = findProviderById(config, configuredModel?.providerId)
+    || findProviderById(config, metadata?.activeImageModel?.providerId)
+    || findProviderById(config, imageModel?.providerId);
+
+  return String(provider?.baseUrl || '').trim().replace(/\/+$/, '');
+};
+
 const headersForTaskUpstream = async (task, upstream, imageModel) => {
   const headers = sanitizeHeaders(upstream?.headers || {});
   const providedAuthorization = headers.Authorization || headers.authorization;
@@ -572,7 +621,7 @@ const configuredImageModels = parseConfiguredImageModels().map((model) => {
   };
 }).filter((model) => model.id && model.apiModel);
 
-const findImageModelRoute = (sourceBody, metadata) => {
+const parseObjectBody = (sourceBody) => {
   const body = typeof sourceBody === 'string' ? (() => {
     try {
       return JSON.parse(sourceBody);
@@ -580,20 +629,102 @@ const findImageModelRoute = (sourceBody, metadata) => {
       return {};
     }
   })() : (sourceBody || {});
+  return body && typeof body === 'object' ? body : {};
+};
+
+const inferImageRequestFormat = (model) => {
+  const apiModel = modelNameOf(model?.apiModel || model?.model || model?.id);
+  const endpoint = String(model?.endpoint || '').toLowerCase();
+  if (endpoint.includes('/v1/chat/completions')) return 'openai-chat-image';
+  if (/gemini.*(image|flash)|flash[-_ ]?image/.test(apiModel)) return 'openai-chat-image';
+  return 'openai-image';
+};
+
+const imageRouteFromModelConfigModel = (model) => {
+  if (!model || model.type !== 'image' || model.isEnabled === false) return null;
+  const apiModel = String(model.apiModel || model.model || model.id || '').trim();
+  if (!apiModel) return null;
+  const requestFormat = inferImageRequestFormat({ ...model, apiModel });
+  return {
+    id: String(model.id || apiModel).trim(),
+    name: String(model.name || apiModel).trim(),
+    apiModel,
+    type: 'image',
+    providerId: String(model.providerId || '').trim(),
+    endpoint: String(model.endpoint || (
+      requestFormat === 'openai-chat-image' ? '/v1/chat/completions' : '/v1/images/generations'
+    )),
+    requestFormat,
+    responseFormat: String(model.responseFormat || model.params?.responseFormat || requestFormat),
+    isBuiltIn: false,
+    isEnabled: model.isEnabled !== false,
+    params: {
+      ...(model.params && typeof model.params === 'object' ? model.params : {}),
+      requestFormat,
+      responseFormat: String(model.responseFormat || model.params?.responseFormat || requestFormat),
+    },
+  };
+};
+
+const imageRouteMatchesCandidate = (route, candidate) => {
+  const normalized = modelNameOf(candidate);
+  if (!normalized || !route) return false;
+  return normalized === modelNameOf(route.id) || normalized === modelNameOf(route.apiModel);
+};
+
+const uniqueImageRoutes = (routes) => {
+  const seen = new Set();
+  return routes.filter((route) => {
+    if (!route?.apiModel) return false;
+    const key = `${modelNameOf(route.providerId)}:${modelNameOf(route.apiModel)}:${modelNameOf(route.endpoint)}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+};
+
+const resolveImageModelRoutes = async (sourceBody, metadata) => {
+  const body = parseObjectBody(sourceBody);
+  const config = await readModelConfigSafely();
+  const configuredRoutes = flattenModelConfigModels(config)
+    .map(imageRouteFromModelConfigModel)
+    .filter(Boolean);
+  const routePool = [...configuredRoutes, ...configuredImageModels];
+  const activeChainIds = Array.isArray(config?.activeModelChains?.image)
+    ? config.activeModelChains.image
+    : [];
+  const activeChainRoutes = activeChainIds
+    .map(id => routePool.find(route => imageRouteMatchesCandidate(route, id)))
+    .filter(Boolean);
   const candidates = [
     body?.model,
     metadata?.activeImageModel?.apiModel,
     metadata?.activeImageModel?.id,
+    metadata?.resolvedImageModel?.apiModel,
+    metadata?.resolvedImageModel?.id,
+    config?.activeModels?.image,
     DEFAULT_IMAGE_MODEL_ID,
-  ].map(modelNameOf).filter(Boolean);
+  ].filter(Boolean);
 
-  let model = configuredImageModels.find((item) => candidates.includes(modelNameOf(item.apiModel))
-    || candidates.includes(modelNameOf(item.id)));
-  if (!model) {
-    model = configuredImageModels.find((item) => item.id === DEFAULT_IMAGE_MODEL_ID) || configuredImageModels[0];
-  }
+  const explicitRoute = candidates
+    .map(candidate => routePool.find(route => imageRouteMatchesCandidate(route, candidate)))
+    .find(Boolean);
+  const defaultRoute = routePool.find(route => imageRouteMatchesCandidate(route, DEFAULT_IMAGE_MODEL_ID))
+    || configuredImageModels[0];
+  const fallbackRoute = routePool.find(route => imageRouteMatchesCandidate(route, IMAGE_FALLBACK_MODEL_ID));
 
-  return model || DEFAULT_NEW_API_IMAGE_MODELS[0];
+  return uniqueImageRoutes([
+    explicitRoute,
+    ...activeChainRoutes,
+    ...configuredRoutes,
+    defaultRoute,
+    fallbackRoute,
+  ].filter(Boolean));
+};
+
+const findImageModelRoute = async (sourceBody, metadata) => {
+  const routes = await resolveImageModelRoutes(sourceBody, metadata);
+  return routes[0] || configuredImageModels[0] || DEFAULT_NEW_API_IMAGE_MODELS[0];
 };
 
 const imageRoutePublicView = (route) => route ? {
@@ -605,11 +736,43 @@ const imageRoutePublicView = (route) => route ? {
   responseFormat: route.responseFormat,
 } : null;
 
-const fallbackRoutesForImageRoute = (route) => {
-  if (!route || modelNameOf(route.id) === modelNameOf(IMAGE_FALLBACK_MODEL_ID)) return [];
-  const fallback = configuredImageModels.find((model) => modelNameOf(model.id) === modelNameOf(IMAGE_FALLBACK_MODEL_ID));
-  if (!fallback || modelNameOf(fallback.id) === modelNameOf(route.id)) return [];
-  return [fallback];
+const buildImageTaskUpstreamForRoute = async ({
+  route,
+  payload,
+  sourcePayload,
+  taskPath,
+}) => {
+  const endpoint = await endpointBaseUrlForImageTask({
+    providedEndpoint: payload?.endpoint,
+    sourceBody: sourcePayload,
+    metadata: payload?.metadata,
+    imageModel: route,
+  });
+  if (!endpoint) {
+    throw new Error(`Missing image task endpoint for model ${route?.apiModel || route?.id || ''}.`);
+  }
+
+  const upstreamUrl = `${endpoint}${route?.endpoint || taskPath}`;
+  const authorization = await authorizationForTaskUpstream({
+    rawUrl: upstreamUrl,
+    providedAuthorization: payload?.authorization,
+    metadata: payload?.metadata,
+    imageModel: route,
+  });
+
+  return {
+    url: normalizeUpstreamUrl(upstreamUrl),
+    method: 'POST',
+    headers: {
+      Accept: '*/*',
+      'Content-Type': 'application/json',
+      ...(authorization ? { Authorization: authorization } : {}),
+    },
+    body: route ? buildImageBodyForRoute(sourcePayload, route) : JSON.stringify(sourcePayload),
+    upstreamPublicUrl: upstreamUrl,
+    responseFormat: route?.responseFormat || route?.requestFormat || 'openai-image',
+    imageModel: imageRoutePublicView(route),
+  };
 };
 
 const buildOpenAiImageBody = (sourceBody, route) => {
@@ -656,30 +819,8 @@ const buildImageBodyForRoute = (sourceBody, route) => (
 );
 
 const fallbackReasonFromError = (error) => {
-  const message = String(error?.message || error || '');
-  const status = Number(error?.status || 0);
-  const haystack = `${message}\n${error?.responseText || ''}`.toLowerCase();
-  if (
-    status === 503
-    && (
-      haystack.includes('model_not_found')
-      || haystack.includes('no available')
-      || haystack.includes('distributor')
-      || haystack.includes('无可用渠道')
-      || haystack.includes('模型') && haystack.includes('无可用')
-    )
-  ) {
-    return message.slice(0, 1000);
-  }
-  if (
-    haystack.includes('model_not_found')
-    || haystack.includes('no available channel')
-    || haystack.includes('no available distributor')
-    || haystack.includes('无可用渠道')
-  ) {
-    return message.slice(0, 1000);
-  }
-  return null;
+  const message = String(error?.message || error || 'Image task attempt failed.');
+  return message.slice(0, 1000);
 };
 
 const dataUrlFromMediaUrl = async (mediaUrl) => {
@@ -1081,12 +1222,15 @@ const runImageTask = async (task) => {
       } catch (error) {
         lastError = error;
         const endedAt = Date.now();
-        const fallbackReason = !didTimeout && task.status !== 'canceled' && fallbackReasonFromError(error);
-        attempt.status = fallbackReason && index < attemptUpstreams.length - 1 ? 'failed-fallback' : 'failed';
+        const hasNextAttempt = index < attemptUpstreams.length - 1;
+        const fallbackReason = !didTimeout && task.status !== 'canceled' && hasNextAttempt
+          ? fallbackReasonFromError(error)
+          : null;
+        attempt.status = fallbackReason ? 'failed-fallback' : 'failed';
         attempt.failedAt = endedAt;
         attempt.error = error instanceof Error ? error.message : 'Image task attempt failed.';
         task.updatedAt = endedAt;
-        if (fallbackReason && index < attemptUpstreams.length - 1) {
+        if (fallbackReason) {
           task.metadata = {
             ...(task.metadata || {}),
             fallbackReason,
@@ -1497,60 +1641,57 @@ export const createProjectStoreHandler = () => async (req, res, next) => {
       }
 
       try {
-        const endpoint = String(payload?.endpoint || '').replace(/\/+$/, '');
         const taskPath = String(payload?.path || '/v1/images/generations');
-        if (!endpoint) throw new Error('Missing image task endpoint.');
         if (!taskPath.startsWith('/')) throw new Error('Invalid image task path.');
-        const sourcePayload = payload?.payload || {};
-        const route = findImageModelRoute(sourcePayload, payload?.metadata);
-        const upstreamUrl = `${endpoint}${route?.endpoint || taskPath}`;
-        const authorization = await authorizationForTaskUpstream({
-          rawUrl: upstreamUrl,
-          providedAuthorization: payload?.authorization,
-          metadata: payload?.metadata,
-          imageModel: route,
-        });
-        const responseFormat = route?.responseFormat || 'openai-image';
-        const fallbackUpstreams = route ? fallbackRoutesForImageRoute(route).map((fallbackRoute) => {
-          const fallbackUrl = `${endpoint}${fallbackRoute.endpoint || taskPath}`;
-          return {
-            url: normalizeUpstreamUrl(fallbackUrl),
-            method: 'POST',
-            headers: {
-              Accept: '*/*',
-              'Content-Type': 'application/json',
-            },
-            body: buildImageBodyForRoute(sourcePayload, fallbackRoute),
-            upstreamPublicUrl: fallbackUrl,
-            responseFormat: fallbackRoute.responseFormat,
-            imageModel: imageRoutePublicView(fallbackRoute),
-          };
-        }) : [];
+        const sourcePayload = payload?.payload && typeof payload.payload === 'object'
+          ? payload.payload
+          : {
+              model: payload?.model,
+              prompt: payload?.prompt,
+              messages: payload?.messages,
+              input: payload?.input,
+              size: payload?.size,
+              n: payload?.n,
+              response_format: payload?.response_format,
+              quality: payload?.quality,
+              style: payload?.style,
+            };
+        const routes = await resolveImageModelRoutes(sourcePayload, payload?.metadata);
+        if (routes.length === 0) throw new Error('No image model configured.');
+        const upstreams = [];
+        for (const route of routes) {
+          upstreams.push(await buildImageTaskUpstreamForRoute({
+            route,
+            payload,
+            sourcePayload,
+            taskPath,
+          }));
+        }
+        const primaryUpstream = upstreams[0];
+        const fallbackUpstreams = upstreams.slice(1).map((upstream) => ({
+          url: upstream.url,
+          method: upstream.method,
+          headers: upstream.headers,
+          body: upstream.body,
+          upstreamPublicUrl: upstream.upstreamPublicUrl,
+          responseFormat: upstream.responseFormat,
+          imageModel: upstream.imageModel,
+        }));
 
         const task = await createPersistentImageTask({
-          responseFormat,
-          upstreamPublicUrl: upstreamUrl,
+          responseFormat: primaryUpstream.responseFormat,
+          upstreamPublicUrl: primaryUpstream.upstreamPublicUrl,
           metadata: {
             ...(payload?.metadata || {}),
-            resolvedImageModel: route ? {
-              id: route.id,
-              apiModel: route.apiModel,
-              providerId: route.providerId,
-              endpoint: route.endpoint,
-              requestFormat: route.requestFormat,
-              responseFormat: route.responseFormat,
-            } : null,
+            resolvedImageModel: primaryUpstream.imageModel,
+            imageModelChain: upstreams.map(upstream => upstream.imageModel).filter(Boolean),
           },
           target: payload?.target,
           upstream: {
-            url: normalizeUpstreamUrl(upstreamUrl),
-            method: 'POST',
-            headers: {
-              Accept: '*/*',
-              'Content-Type': 'application/json',
-              ...(authorization ? { Authorization: authorization } : {}),
-            },
-            body: route ? buildImageBodyForRoute(sourcePayload, route) : JSON.stringify(sourcePayload),
+            url: primaryUpstream.url,
+            method: primaryUpstream.method,
+            headers: primaryUpstream.headers,
+            body: primaryUpstream.body,
             fallbackUpstreams,
           },
         });

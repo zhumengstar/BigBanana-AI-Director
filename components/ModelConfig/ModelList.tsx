@@ -4,15 +4,16 @@
  */
 
 import React, { useEffect, useMemo, useState } from 'react';
-import { AlertCircle, CheckCircle, Download, Eye, EyeOff, Loader2, Save, Server, Shield } from 'lucide-react';
+import { AlertCircle, ArrowDown, ArrowUp, CheckCircle, Download, Eye, EyeOff, Loader2, Plus, Save, Server, Shield, Trash2 } from 'lucide-react';
 import { ModelType } from '../../types/model';
 import {
   fetchServerModelConfiguration,
-  getActiveModel,
+  getActiveModelChain,
+  inferEndpointForApiModel,
   getProviderById,
   getTypeProviderId,
   saveServerModelConfiguration,
-  saveTypeModelConfiguration,
+  saveTypeModelConfigurations,
 } from '../../services/modelRegistry';
 import { useAlert } from '../GlobalAlert';
 
@@ -29,8 +30,8 @@ interface RemoteModel {
 interface ModelConfigDraft {
   baseUrl: string;
   apiKey: string;
-  modelName: string;
-  endpoint: string;
+  modelNames: string[];
+  manualModelName: string;
   remoteModels: RemoteModel[];
   fetchMessage: string;
 }
@@ -53,10 +54,22 @@ const defaultEndpointByType: Record<ModelType, string> = {
 
 const normalizeBaseUrl = (value: string): string => value.trim().replace(/\/+$/, '');
 
-const nonChatModelPattern = /(image|imagen|dall[-_ ]?e|flux|sdxl|stable[-_ ]?diffusion|midjourney|video|veo|sora|seedance|kling|runway|wan|hailuo|luma|audio|speech|tts|whisper|transcrib|voice|embedding|rerank|moderation)/i;
+const uniqueModelNames = (values: string[]): string[] => {
+  const seen = new Set<string>();
+  return values
+    .map(value => value.trim())
+    .filter((value) => {
+      if (!value || seen.has(value)) return false;
+      seen.add(value);
+      return true;
+    });
+};
+
+const imageModelPattern = /(image|imagen|gpt[-_ ]?image|flash[-_ ]?image|gemini.*image|dall[-_ ]?e|flux|sdxl|stable[-_ ]?diffusion|midjourney)/i;
+const nonChatModelPattern = /(image|imagen|gpt[-_ ]?image|flash[-_ ]?image|gemini.*image|dall[-_ ]?e|flux|sdxl|stable[-_ ]?diffusion|midjourney|video|veo|sora|seedance|kling|runway|wan|hailuo|luma|audio|speech|tts|whisper|transcrib|voice|embedding|rerank|moderation)/i;
 
 const modelTypePatterns: Record<Exclude<ModelType, 'chat'>, RegExp> = {
-  image: /(image|imagen|dall[-_ ]?e|flux|sdxl|stable[-_ ]?diffusion|midjourney)/i,
+  image: imageModelPattern,
   video: /(video|veo|sora|seedance|kling|runway|wan|hailuo|luma)/i,
   audio: /(audio|speech|tts|whisper|transcrib|voice)/i,
 };
@@ -105,13 +118,14 @@ const ModelList: React.FC<ModelListProps> = ({ type, onRefresh }) => {
   const { showAlert } = useAlert();
   const [registryVersion, setRegistryVersion] = useState(0);
   const providerId = getTypeProviderId(type);
-  const activeModel = getActiveModel(type);
-  const provider = activeModel ? getProviderById(activeModel.providerId) : getProviderById(providerId);
+  const activeModelChain = getActiveModelChain(type);
+  const primaryActiveModel = activeModelChain[0];
+  const provider = primaryActiveModel ? getProviderById(primaryActiveModel.providerId) : getProviderById(providerId);
 
   const [baseUrl, setBaseUrl] = useState('');
   const [apiKey, setApiKey] = useState('');
-  const [modelName, setModelName] = useState('');
-  const [endpoint, setEndpoint] = useState(defaultEndpointByType[type]);
+  const [modelNames, setModelNames] = useState<string[]>([]);
+  const [manualModelName, setManualModelName] = useState('');
   const [remoteModels, setRemoteModels] = useState<RemoteModel[]>([]);
   const [isFetching, setIsFetching] = useState(false);
   const [fetchMessage, setFetchMessage] = useState('');
@@ -121,8 +135,8 @@ const ModelList: React.FC<ModelListProps> = ({ type, onRefresh }) => {
     modelConfigDrafts[type] = {
       baseUrl,
       apiKey,
-      modelName,
-      endpoint,
+      modelNames,
+      manualModelName,
       remoteModels,
       fetchMessage,
       ...modelConfigDrafts[type],
@@ -147,8 +161,8 @@ const ModelList: React.FC<ModelListProps> = ({ type, onRefresh }) => {
     if (draft) {
       setBaseUrl(draft.baseUrl);
       setApiKey(draft.apiKey);
-      setModelName(draft.modelName);
-      setEndpoint(draft.endpoint);
+      setModelNames(draft.modelNames);
+      setManualModelName(draft.manualModelName);
       setRemoteModels(draft.remoteModels);
       setFetchMessage(draft.fetchMessage);
       return;
@@ -156,16 +170,37 @@ const ModelList: React.FC<ModelListProps> = ({ type, onRefresh }) => {
 
     setBaseUrl(provider?.baseUrl || '');
     setApiKey(provider?.apiKey || '');
-    setModelName(activeModel?.apiModel || activeModel?.id?.split(':').slice(1).join(':') || '');
-    setEndpoint(activeModel?.endpoint || defaultEndpointByType[type]);
+    setModelNames(activeModelChain.map(model => model.apiModel || model.id.split(':').slice(1).join(':')));
+    setManualModelName('');
     setRemoteModels([]);
     setFetchMessage('');
-  }, [type, provider?.baseUrl, provider?.apiKey, activeModel?.id, activeModel?.apiModel, activeModel?.endpoint, registryVersion]);
+  }, [type, provider?.baseUrl, provider?.apiKey, activeModelChain.map(model => model.id).join('|'), registryVersion]);
 
-  const selectedModel = useMemo(
-    () => remoteModels.find(model => model.id === modelName),
-    [remoteModels, modelName]
-  );
+  const selectedModelNames = useMemo(() => modelNames.filter(Boolean), [modelNames]);
+  const selectedModelNameSet = useMemo(() => new Set(selectedModelNames), [selectedModelNames]);
+
+  const addModelName = (value: string) => {
+    const clean = value.trim();
+    if (!clean || selectedModelNameSet.has(clean)) return;
+    const next = [...selectedModelNames, clean];
+    setModelNames(next);
+    saveDraft({ modelNames: next });
+  };
+
+  const removeModelName = (value: string) => {
+    const next = selectedModelNames.filter(model => model !== value);
+    setModelNames(next);
+    saveDraft({ modelNames: next });
+  };
+
+  const moveModelName = (index: number, direction: -1 | 1) => {
+    const targetIndex = index + direction;
+    if (targetIndex < 0 || targetIndex >= selectedModelNames.length) return;
+    const next = [...selectedModelNames];
+    [next[index], next[targetIndex]] = [next[targetIndex], next[index]];
+    setModelNames(next);
+    saveDraft({ modelNames: next });
+  };
 
   const handleFetchModels = async () => {
     const cleanBaseUrl = normalizeBaseUrl(baseUrl);
@@ -219,15 +254,16 @@ const ModelList: React.FC<ModelListProps> = ({ type, onRefresh }) => {
       }
 
       setRemoteModels(typedModels);
-      const nextModelName = modelName && typedModels.some(model => model.id === modelName)
-        ? modelName
-        : typedModels[0].id;
-      if (nextModelName !== modelName) {
-        setModelName(nextModelName);
+      let nextModelNames = selectedModelNames.filter(modelName => typedModels.some(model => model.id === modelName));
+      if (nextModelNames.length === 0 && typedModels[0]?.id) {
+        nextModelNames = [typedModels[0].id];
+      }
+      if (nextModelNames.join('|') !== selectedModelNames.join('|')) {
+        setModelNames(nextModelNames);
       }
       const message = `已拉取 ${models.length} 个模型，显示 ${typedModels.length} 个${typeLabels[type]}模型`;
       setFetchMessage(message);
-      saveDraft({ remoteModels: typedModels, modelName: nextModelName, fetchMessage: message });
+      saveDraft({ remoteModels: typedModels, modelNames: nextModelNames, fetchMessage: message });
     } catch (error: any) {
       setRemoteModels([]);
       const message = `拉取失败：${error?.message || '网络或跨域错误'}。可以手动输入模型名后保存。`;
@@ -240,25 +276,24 @@ const ModelList: React.FC<ModelListProps> = ({ type, onRefresh }) => {
 
   const handleSave = async () => {
     try {
-      const model = saveTypeModelConfiguration({
+      const models = saveTypeModelConfigurations({
         type,
         baseUrl,
         apiKey,
-        apiModel: modelName,
-        endpoint,
-        displayName: selectedModel?.name || modelName,
+        apiModels: selectedModelNames,
+        displayNames: Object.fromEntries(remoteModels.map(model => [model.id, model.name])),
       });
       await saveServerModelConfiguration();
       saveDraft({
         baseUrl,
         apiKey,
-        modelName,
-        endpoint,
+        modelNames: selectedModelNames,
+        manualModelName,
         remoteModels,
         fetchMessage,
       });
       onRefresh();
-      showAlert(`已保存 ${model.name}`, { type: 'success' });
+      showAlert(`已保存 ${models.length} 个${typeLabels[type]}模型`, { type: 'success' });
     } catch (error: any) {
       showAlert(error?.message || '保存失败', { type: 'error' });
     }
@@ -274,13 +309,13 @@ const ModelList: React.FC<ModelListProps> = ({ type, onRefresh }) => {
             <span className="text-xs font-bold text-[var(--accent-text-hover)]">当前使用</span>
           </div>
           <p className="break-all text-[11px] text-[var(--text-secondary)]">
-            {activeModel ? (
-              <>
-                <span className="font-medium">{activeModel.apiModel || activeModel.id}</span>
+            {activeModelChain.length > 0 ? (
+              <span>
+                {activeModelChain.map(model => model.apiModel || model.id).join(' → ')}
                 {provider?.baseUrl && (
-                  <span className="ml-2 text-[var(--text-tertiary)]">→ {provider.baseUrl}</span>
+                  <span className="ml-2 text-[var(--text-tertiary)]">· {provider.baseUrl}</span>
                 )}
-              </>
+              </span>
             ) : (
               '未配置'
             )}
@@ -356,54 +391,136 @@ const ModelList: React.FC<ModelListProps> = ({ type, onRefresh }) => {
 
         <div>
           <label className="mb-1 block text-[10px] font-bold uppercase tracking-widest text-[var(--text-tertiary)]">
-            模型
+            选择模型
           </label>
           {remoteModels.length > 0 ? (
-            <select
-              value={modelName}
-              onChange={(event) => {
-                const value = event.target.value;
-                setModelName(value);
-                saveDraft({ modelName: value });
-              }}
-              className="w-full rounded-lg border border-[var(--border-secondary)] bg-[var(--bg-hover)] px-3 py-2.5 font-mono text-xs text-[var(--text-primary)] focus:border-[var(--accent)] focus:outline-none"
-            >
+            <div className="max-h-52 space-y-1 overflow-y-auto rounded-lg border border-[var(--border-secondary)] bg-[var(--bg-hover)] p-2">
               {remoteModels.map((model) => (
-                <option key={model.id} value={model.id}>
-                  {model.name === model.id ? model.id : `${model.name} (${model.id})`}
-                </option>
+                <label
+                  key={model.id}
+                  className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-2 text-xs text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-elevated)]"
+                >
+                  <input
+                    type="checkbox"
+                    checked={selectedModelNameSet.has(model.id)}
+                    onChange={(event) => {
+                      const next = event.target.checked
+                        ? uniqueModelNames([...selectedModelNames, model.id])
+                        : selectedModelNames.filter(item => item !== model.id);
+                      setModelNames(next);
+                      saveDraft({ modelNames: next });
+                    }}
+                    className="h-3.5 w-3.5 accent-[var(--accent)]"
+                  />
+                  <span className="min-w-0 flex-1 break-all font-mono">
+                    {model.name === model.id ? model.id : `${model.name} (${model.id})`}
+                  </span>
+                </label>
               ))}
-            </select>
+            </div>
           ) : (
-            <input
-              type="text"
-              value={modelName}
-              onChange={(event) => {
-                const value = event.target.value;
-                setModelName(value);
-                saveDraft({ modelName: value });
-              }}
-              placeholder="输入模型名，如 gpt-image-2"
-              className="w-full rounded-lg border border-[var(--border-secondary)] bg-[var(--bg-hover)] px-3 py-2.5 font-mono text-xs text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:border-[var(--accent)] focus:outline-none"
-            />
+            <p className="rounded-lg border border-dashed border-[var(--border-secondary)] bg-[var(--bg-hover)] px-3 py-3 text-[11px] text-[var(--text-tertiary)]">
+              拉取模型后可勾选；也可以手动添加模型名。
+            </p>
           )}
         </div>
 
         <div>
           <label className="mb-1 block text-[10px] font-bold uppercase tracking-widest text-[var(--text-tertiary)]">
-            调用端点
+            手动添加模型
           </label>
-          <input
-            type="text"
-            value={endpoint}
-            onChange={(event) => {
-              const value = event.target.value;
-              setEndpoint(value);
-              saveDraft({ endpoint: value });
-            }}
-            placeholder={defaultEndpointByType[type]}
-            className="w-full rounded-lg border border-[var(--border-secondary)] bg-[var(--bg-hover)] px-3 py-2.5 font-mono text-xs text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:border-[var(--accent)] focus:outline-none"
-          />
+          <div className="flex gap-2">
+            <input
+              type="text"
+              value={manualModelName}
+              onChange={(event) => {
+                const value = event.target.value;
+                setManualModelName(value);
+                saveDraft({ manualModelName: value });
+              }}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') {
+                  event.preventDefault();
+                  addModelName(manualModelName);
+                  setManualModelName('');
+                  saveDraft({ manualModelName: '' });
+                }
+              }}
+              placeholder={type === 'image' ? '如 gpt-image-2 或 gemini-3.1-flash-image' : '输入模型名'}
+              className="min-w-0 flex-1 rounded-lg border border-[var(--border-secondary)] bg-[var(--bg-hover)] px-3 py-2.5 font-mono text-xs text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:border-[var(--accent)] focus:outline-none"
+            />
+            <button
+              type="button"
+              onClick={() => {
+                addModelName(manualModelName);
+                setManualModelName('');
+                saveDraft({ manualModelName: '' });
+              }}
+              className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-[var(--border-secondary)] px-3 py-2.5 text-xs font-bold text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
+            >
+              <Plus className="h-3.5 w-3.5" />
+              添加
+            </button>
+          </div>
+        </div>
+
+        <div>
+          <label className="mb-1 block text-[10px] font-bold uppercase tracking-widest text-[var(--text-tertiary)]">
+            执行顺序
+          </label>
+          {selectedModelNames.length > 0 ? (
+            <div className="space-y-2">
+              {selectedModelNames.map((modelName, index) => (
+                <div
+                  key={modelName}
+                  className="flex items-center gap-2 rounded-lg border border-[var(--border-secondary)] bg-[var(--bg-hover)] px-3 py-2"
+                >
+                  <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-[var(--bg-elevated)] text-[10px] font-bold text-[var(--text-tertiary)]">
+                    {index + 1}
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <div className="break-all font-mono text-xs text-[var(--text-primary)]">{modelName}</div>
+                    <div className="break-all font-mono text-[10px] text-[var(--text-tertiary)]">
+                      {inferEndpointForApiModel(type, modelName, defaultEndpointByType[type])}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => moveModelName(index, -1)}
+                    disabled={index === 0}
+                    className="flex h-7 w-7 items-center justify-center rounded text-[var(--text-tertiary)] transition-colors hover:bg-[var(--bg-elevated)] hover:text-[var(--text-primary)] disabled:cursor-not-allowed disabled:opacity-35"
+                    aria-label="上移模型"
+                    title="上移模型"
+                  >
+                    <ArrowUp className="h-3.5 w-3.5" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => moveModelName(index, 1)}
+                    disabled={index === selectedModelNames.length - 1}
+                    className="flex h-7 w-7 items-center justify-center rounded text-[var(--text-tertiary)] transition-colors hover:bg-[var(--bg-elevated)] hover:text-[var(--text-primary)] disabled:cursor-not-allowed disabled:opacity-35"
+                    aria-label="下移模型"
+                    title="下移模型"
+                  >
+                    <ArrowDown className="h-3.5 w-3.5" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => removeModelName(modelName)}
+                    className="flex h-7 w-7 items-center justify-center rounded text-[var(--danger)] transition-colors hover:bg-[var(--danger-bg)]"
+                    aria-label="移除模型"
+                    title="移除模型"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="rounded-lg border border-dashed border-[var(--border-secondary)] bg-[var(--bg-hover)] px-3 py-3 text-[11px] text-[var(--text-tertiary)]">
+              还没有选择模型。执行时会按这里的顺序调用，前一个失败后自动切换到后一个。
+            </p>
+          )}
         </div>
 
         <button
@@ -412,7 +529,7 @@ const ModelList: React.FC<ModelListProps> = ({ type, onRefresh }) => {
           className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-[var(--btn-primary-bg)] px-4 py-3 text-xs font-bold text-[var(--btn-primary-text)] transition-colors hover:bg-[var(--btn-primary-hover)]"
         >
           <Save className="h-3.5 w-3.5" />
-          保存并使用该模型
+          保存模型链
         </button>
       </div>
     </div>

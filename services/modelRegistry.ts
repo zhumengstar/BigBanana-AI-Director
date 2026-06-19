@@ -9,6 +9,7 @@ import {
   ModelProvider,
   ModelRegistryState,
   ActiveModels,
+  ActiveModelChains,
   ChatModelDefinition,
   ImageModelDefinition,
   VideoModelDefinition,
@@ -29,6 +30,13 @@ const EMPTY_ACTIVE_MODELS: ActiveModels = {
   image: '',
   video: '',
   audio: '',
+};
+
+const EMPTY_ACTIVE_MODEL_CHAINS: ActiveModelChains = {
+  chat: [],
+  image: [],
+  video: [],
+  audio: [],
 };
 
 // 规范化 URL（去尾部斜杠、转小写）用于去重
@@ -52,27 +60,86 @@ const MODEL_TYPE_PROVIDER_IDS: Record<ModelType, string> = {
 // 运行时状态缓存
 let registryState: ModelRegistryState | null = null;
 
-const normalizeRegistryState = (value: Partial<ModelRegistryState> | null | undefined): ModelRegistryState => ({
-  providers: Array.isArray(value?.providers)
+const uniqueStrings = (values: string[]): string[] => {
+  const seen = new Set<string>();
+  return values
+    .map(value => String(value || '').trim())
+    .filter((value) => {
+      if (!value || seen.has(value)) return false;
+      seen.add(value);
+      return true;
+    });
+};
+
+const modelIdForType = (type: ModelType, apiModel: string): string => `${type}:${apiModel.trim()}`;
+
+export const inferEndpointForApiModel = (type: ModelType, apiModel: string, fallbackEndpoint?: string): string => {
+  if (type !== 'image') {
+    return fallbackEndpoint?.trim() || defaultEndpointForType(type);
+  }
+
+  const normalized = apiModel.toLowerCase();
+  if (/gemini.*(image|flash)|flash[-_ ]?image/.test(normalized)) {
+    return '/v1/chat/completions';
+  }
+  if (/gpt[-_ ]?image|dall[-_ ]?e|image|imagen|flux|sdxl|stable[-_ ]?diffusion|midjourney/.test(normalized)) {
+    return '/v1/images/generations';
+  }
+  return fallbackEndpoint?.trim() || defaultEndpointForType(type);
+};
+
+const normalizeActiveModelChains = (
+  value: Partial<ActiveModelChains> | null | undefined,
+  activeModels: ActiveModels,
+  models: ModelDefinition[]
+): ActiveModelChains => {
+  const next: ActiveModelChains = { ...EMPTY_ACTIVE_MODEL_CHAINS };
+  (Object.keys(EMPTY_ACTIVE_MODELS) as ModelType[]).forEach((type) => {
+    const enabledIds = new Set(
+      models
+        .filter(model => model.type === type && model.isEnabled !== false)
+        .map(model => model.id)
+    );
+    const rawChain = Array.isArray(value?.[type]) ? value?.[type] || [] : [];
+    const candidates = uniqueStrings([
+      activeModels[type],
+      ...rawChain,
+    ]);
+    const filtered = candidates.filter(id => enabledIds.size === 0 || enabledIds.has(id));
+    next[type] = filtered;
+    activeModels[type] = filtered[0] || '';
+  });
+  return next;
+};
+
+const normalizeRegistryState = (value: Partial<ModelRegistryState> | null | undefined): ModelRegistryState => {
+  const providers = Array.isArray(value?.providers)
     ? value.providers.filter((provider): provider is ModelProvider => Boolean(provider && provider.id && provider.baseUrl)).map(provider => ({
         ...provider,
         isBuiltIn: false,
       }))
-    : [],
-  models: Array.isArray(value?.models)
+    : [];
+  const models = Array.isArray(value?.models)
     ? value.models.filter((model): model is ModelDefinition => Boolean(model && model.id && model.type && model.providerId)).map(model => ({
         ...model,
         apiModel: model.apiModel || model.id,
         isBuiltIn: false,
         isEnabled: model.isEnabled !== false,
       }))
-    : [],
-  activeModels: {
+    : [];
+  const activeModels = {
     ...EMPTY_ACTIVE_MODELS,
     ...(value?.activeModels || {}),
-  },
-  globalApiKey: undefined,
-});
+  };
+  const activeModelChains = normalizeActiveModelChains(value?.activeModelChains, activeModels, models);
+  return {
+    providers,
+    models,
+    activeModels,
+    activeModelChains,
+    globalApiKey: undefined,
+  };
+};
 
 const modelConfigEndpoint = '/api/project-store/model-config';
 
@@ -87,6 +154,7 @@ const getDefaultState = (): ModelRegistryState => ({
   providers: [],
   models: [],
   activeModels: { ...EMPTY_ACTIVE_MODELS },
+  activeModelChains: { ...EMPTY_ACTIVE_MODEL_CHAINS },
   globalApiKey: undefined,
 });
 
@@ -118,6 +186,10 @@ export const loadRegistry = (): ModelRegistryState => {
       parsed.activeModels = {
         ...EMPTY_ACTIVE_MODELS,
         ...(parsed.activeModels || {}),
+      };
+      parsed.activeModelChains = {
+        ...EMPTY_ACTIVE_MODEL_CHAINS,
+        ...((parsed as any).activeModelChains || {}),
       };
       delete (parsed as any).globalApiKey;
       
@@ -152,6 +224,9 @@ export const loadRegistry = (): ModelRegistryState => {
         parsed.activeModels.video?.startsWith('veo_3_1_')
       ) {
         parsed.activeModels.video = '';
+        parsed.activeModelChains.video = parsed.activeModelChains.video.filter(
+          id => !deprecatedVideoModelIds.includes(id) && id !== 'veo_3_1' && !id.startsWith('veo_3_1_')
+        );
         activeModelMigrated = true;
       }
       
@@ -159,7 +234,7 @@ export const loadRegistry = (): ModelRegistryState => {
         localStorage.removeItem(LEGACY_API_KEY_STORAGE_KEY);
       }
       
-      registryState = parsed;
+      registryState = normalizeRegistryState(parsed);
 
       // 如果发生了迁移，立即回写 localStorage，避免每次加载都重复执行
       const builtInItemsRemoved =
@@ -168,14 +243,14 @@ export const loadRegistry = (): ModelRegistryState => {
 
       if (builtInItemsRemoved || modelsRemoved > 0 || activeModelMigrated) {
         try {
-          localStorage.setItem(STORAGE_KEY, JSON.stringify(parsed));
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(registryState));
           console.log(`🔄 模型注册中心迁移完成：清理 ${modelsRemoved} 个废弃模型`);
         } catch (e) {
           // 回写失败不影响运行，下次加载仍会重新迁移
         }
       }
 
-      return parsed;
+      return registryState;
     }
   } catch (e) {
     console.error('加载模型注册中心失败:', e);
@@ -396,8 +471,24 @@ export const getModelById = (id: string): ModelDefinition | undefined => {
  */
 export const getActiveModel = (type: ModelType): ModelDefinition | undefined => {
   const state = loadRegistry();
-  const activeId = state.activeModels[type];
+  const activeId = state.activeModelChains[type]?.[0] || state.activeModels[type];
   return getModelById(activeId);
+};
+
+/**
+ * 获取当前激活模型链。
+ */
+export const getActiveModelChainIds = (type: ModelType): string[] => {
+  const state = loadRegistry();
+  const chain = state.activeModelChains[type] || [];
+  return chain.length ? chain : (state.activeModels[type] ? [state.activeModels[type]] : []);
+};
+
+export const getActiveModelChain = (type: ModelType): ModelDefinition[] => {
+  const ids = getActiveModelChainIds(type);
+  return ids
+    .map(id => getModelById(id))
+    .filter((model): model is ModelDefinition => Boolean(model && model.type === type && model.isEnabled));
 };
 
 /**
@@ -436,7 +527,21 @@ export const setActiveModel = (type: ModelType, modelId: string): boolean => {
   if (!model || model.type !== type || !model.isEnabled) return false;
 
   const state = loadRegistry();
+  const existingChain = state.activeModelChains[type] || [];
+  state.activeModelChains[type] = uniqueStrings([modelId, ...existingChain.filter(id => id !== modelId)]);
   state.activeModels[type] = modelId;
+  saveRegistry(state);
+  return true;
+};
+
+export const setActiveModelChain = (type: ModelType, modelIds: string[]): boolean => {
+  const state = loadRegistry();
+  const chain = uniqueStrings(modelIds).filter((id) => {
+    const model = state.models.find(item => item.id === id);
+    return Boolean(model && model.type === type && model.isEnabled !== false);
+  });
+  state.activeModelChains[type] = chain;
+  state.activeModels[type] = chain[0] || '';
   saveRegistry(state);
   return true;
 };
@@ -516,11 +621,10 @@ export const removeModel = (id: string): boolean => {
   if (!model || model.isBuiltIn) return false;
   
   // 如果删除的是当前激活的模型，切换到同类型的第一个启用模型
+  state.activeModelChains[model.type] = (state.activeModelChains[model.type] || []).filter(modelId => modelId !== id);
   if (state.activeModels[model.type] === id) {
     const fallback = state.models.find(m => m.type === model.type && m.id !== id && m.isEnabled);
-    if (fallback) {
-      state.activeModels[model.type] = fallback.id;
-    }
+    state.activeModels[model.type] = state.activeModelChains[model.type]?.[0] || fallback?.id || '';
   }
   
   state.models = state.models.filter(m => m.id !== id);
@@ -642,20 +746,41 @@ export interface TypeModelConfigurationInput {
   displayName?: string;
 }
 
+export interface TypeModelConfigurationsInput {
+  type: ModelType;
+  baseUrl: string;
+  apiKey: string;
+  apiModels: string[];
+  displayNames?: Record<string, string>;
+}
+
 /**
  * 按模型类型保存一套 API 地址、API Key 和选中模型。
  */
 export const saveTypeModelConfiguration = (input: TypeModelConfigurationInput): ModelDefinition => {
+  const [model] = saveTypeModelConfigurations({
+    type: input.type,
+    baseUrl: input.baseUrl,
+    apiKey: input.apiKey,
+    apiModels: [input.apiModel],
+    displayNames: input.displayName ? { [input.apiModel]: input.displayName } : undefined,
+  });
+  return model;
+};
+
+/**
+ * 按模型类型保存一组有序模型。执行时按顺序 fallback。
+ */
+export const saveTypeModelConfigurations = (input: TypeModelConfigurationsInput): ModelDefinition[] => {
   const state = loadRegistry();
   const providerId = MODEL_TYPE_PROVIDER_IDS[input.type];
   const baseUrl = input.baseUrl.trim().replace(/\/+$/, '');
   const apiKey = input.apiKey.trim();
-  const apiModel = input.apiModel.trim();
-  const modelId = `${input.type}:${apiModel}`;
+  const apiModels = uniqueStrings(input.apiModels);
   const now = Date.now();
 
-  if (!baseUrl || !apiKey || !apiModel) {
-    throw new Error('API 地址、API Key 和模型名称都不能为空');
+  if (!baseUrl || !apiKey || apiModels.length === 0) {
+    throw new Error('API 地址、API Key 和至少一个模型名称不能为空');
   }
 
   const providerIndex = state.providers.findIndex(p => p.id === providerId);
@@ -676,34 +801,40 @@ export const saveTypeModelConfiguration = (input: TypeModelConfigurationInput): 
     };
   }
 
-  state.models = state.models.filter(m => m.type !== input.type || m.id === modelId);
+  const selectedIds = new Set(apiModels.map(apiModel => modelIdForType(input.type, apiModel)));
+  state.models = state.models.filter(m => m.type !== input.type || m.providerId !== providerId || selectedIds.has(m.id));
 
-  const model: ModelDefinition = {
-    id: modelId,
-    apiModel,
-    name: input.displayName?.trim() || apiModel,
-    type: input.type,
-    providerId,
-    endpoint: input.endpoint?.trim() || defaultEndpointForType(input.type),
-    description: `自定义 ${displayNameForType(input.type)} · ${new Date(now).toLocaleString()}`,
-    isBuiltIn: false,
-    isEnabled: true,
-    params: defaultParamsForType(input.type),
-  } as ModelDefinition;
-
-  const existingIndex = state.models.findIndex(m => m.id === modelId);
-  if (existingIndex === -1) {
-    state.models.push(model);
-  } else {
-    state.models[existingIndex] = {
-      ...state.models[existingIndex],
-      ...model,
+  const savedModels = apiModels.map((apiModel) => {
+    const modelId = modelIdForType(input.type, apiModel);
+    const model: ModelDefinition = {
+      id: modelId,
+      apiModel,
+      name: input.displayNames?.[apiModel]?.trim() || apiModel,
+      type: input.type,
+      providerId,
+      endpoint: inferEndpointForApiModel(input.type, apiModel),
+      description: `自定义 ${displayNameForType(input.type)} · ${new Date(now).toLocaleString()}`,
+      isBuiltIn: false,
+      isEnabled: true,
+      params: defaultParamsForType(input.type),
     } as ModelDefinition;
-  }
 
-  state.activeModels[input.type] = modelId;
+    const existingIndex = state.models.findIndex(m => m.id === modelId);
+    if (existingIndex === -1) {
+      state.models.push(model);
+    } else {
+      state.models[existingIndex] = {
+        ...state.models[existingIndex],
+        ...model,
+      } as ModelDefinition;
+    }
+    return model;
+  });
+
+  state.activeModelChains[input.type] = savedModels.map(model => model.id);
+  state.activeModels[input.type] = savedModels[0]?.id || '';
   saveRegistry(state);
-  return model;
+  return savedModels;
 };
 
 export const getTypeProviderId = (type: ModelType): string => MODEL_TYPE_PROVIDER_IDS[type];

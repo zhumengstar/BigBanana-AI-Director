@@ -162,12 +162,23 @@ export interface ActiveModels {
 }
 
 /**
+ * 激活模型链，按顺序执行；前一个失败时自动尝试下一个。
+ */
+export interface ActiveModelChains {
+  chat: string[];
+  image: string[];
+  video: string[];
+  audio: string[];
+}
+
+/**
  * 模型注册中心状态
  */
 export interface ModelRegistryState {
   providers: ModelProvider[];
   models: ModelDefinition[];
   activeModels: ActiveModels;
+  activeModelChains: ActiveModelChains;
   globalApiKey?: string;
 }
 
