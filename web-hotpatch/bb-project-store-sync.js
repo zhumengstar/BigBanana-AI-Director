@@ -323,17 +323,17 @@
     var imageUrl = task && task.imageUrl;
     if (!imageUrl) return false;
 
-    if ('imageUrl' in slot || slot.type === 'start' || slot.type === 'end' || Array.isArray(slot.panels)) {
-      slot.imageUrl = imageUrl;
-    } else {
-      slot.referenceImage = imageUrl;
-    }
-
+    slot.imageUrl = imageUrl;
+    slot.referenceImage = imageUrl;
+    slot.generatedImage = imageUrl;
     slot.status = 'completed';
+    slot.serverImageTaskId = task.id;
+    slot.imageTaskId = task.id;
     slot.recoveredImageTaskId = task.id;
     slot.recoveredImageTaskAt = Date.now();
     delete slot.error;
     delete slot.failureReason;
+    delete slot.lastTransientFailure;
     return true;
   };
 
@@ -453,12 +453,24 @@
     }
 
     var status = String(value.status || '').toLowerCase();
-    if ((status === 'generating' || status === 'queued' || status === 'generating_image' || status === 'generating_panels') && !hasImageReference(value)) {
-      value.status = 'pending';
-      value.lastTransientFailure = 'stale generating state without active server image task';
-      delete value.error;
-      delete value.failureReason;
-      changed += 1;
+    if (status === 'generating' || status === 'queued' || status === 'generating_image' || status === 'generating_panels') {
+      if (hasImageReference(value)) {
+        var imageUrl = value.imageUrl || value.referenceImage || value.generatedImage || value.thumbnailUrl || value.previewUrl || value.coverImage || value.url;
+        value.imageUrl = value.imageUrl || imageUrl;
+        value.referenceImage = value.referenceImage || imageUrl;
+        value.generatedImage = value.generatedImage || imageUrl;
+        value.status = 'completed';
+        delete value.error;
+        delete value.failureReason;
+        delete value.lastTransientFailure;
+        changed += 1;
+      } else {
+        value.status = 'pending';
+        value.lastTransientFailure = 'stale generating state without active server image task';
+        delete value.error;
+        delete value.failureReason;
+        changed += 1;
+      }
     }
 
     Object.keys(value).forEach(function (key) {

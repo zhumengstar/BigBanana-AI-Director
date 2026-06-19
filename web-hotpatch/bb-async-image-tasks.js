@@ -588,7 +588,16 @@
     var changed = false;
     var markPending = function (item) {
       if (!item || (item.status !== 'generating' && item.status !== 'queued')) return item;
-      if (item.referenceImage || item.imageUrl) return item;
+      var imageUrl = item.imageUrl || item.referenceImage || item.generatedImage || item.thumbnailUrl || item.previewUrl || item.coverImage || item.url;
+      if (imageUrl) {
+        changed = true;
+        return Object.assign({}, item, {
+          status: 'completed',
+          imageUrl: item.imageUrl || imageUrl,
+          referenceImage: item.referenceImage || imageUrl,
+          generatedImage: item.generatedImage || imageUrl
+        });
+      }
       changed = true;
       return Object.assign({}, item, {
         status: 'pending',
