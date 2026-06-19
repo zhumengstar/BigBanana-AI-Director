@@ -1267,6 +1267,7 @@ const completeImageStateFromUrl = (item, imageUrl) => {
 
 const imageCandidateScore = (item, task) => {
   if (!item || typeof item !== 'object' || Array.isArray(item)) return 0;
+  if (item.type && item.resourceId && item.model && item.prompt) return 0;
 
   const taskPrompt = normalizeText(task.prompt || extractPromptFromUpstreamBody(task.upstream?.body));
   const target = task.target || task.metadata?.target || {};
