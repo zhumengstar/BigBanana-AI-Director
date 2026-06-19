@@ -949,12 +949,19 @@ NEGATIVE PROMPT (strictly avoid): ${compactNegativePrompt}`;
     const isOpenAiImageEndpoint =
       imageModelEndpoint.includes('/v1/images/generations') ||
       imageModelParams.apiFormat === 'openai';
+    const openAiReferenceImages = [
+      ...referenceImages,
+      continuityReferenceImage,
+    ].filter((value): value is string => Boolean(value));
+
     const openAiImageRequestBody = isOpenAiImageEndpoint
       ? {
-          model: imageModelId,
-          prompt: finalPrompt,
-          n: 1,
-          size: imageModelParams.aspectRatioSizeMap?.[aspectRatio] || imageModelParams.size || '1024x1024',
+        model: imageModelId,
+        prompt: finalPrompt,
+        aspectRatio,
+        ...(openAiReferenceImages.length > 0 ? { referenceImages: openAiReferenceImages } : {}),
+        n: 1,
+        size: imageModelParams.aspectRatioSizeMap?.[aspectRatio] || imageModelParams.size || '1024x1024',
           ...(imageModelParams.quality ? { quality: imageModelParams.quality } : {}),
           ...(imageModelParams.background ? { background: imageModelParams.background } : {}),
         }

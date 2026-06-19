@@ -809,7 +809,43 @@ const imageRoutePublicView = (route) => route ? {
   endpoint: route.endpoint,
   requestFormat: route.requestFormat,
   responseFormat: route.responseFormat,
+  aspectRatio: route.aspectRatio || route.params?.defaultAspectRatio || null,
+  size: route.size || route.params?.size || null,
 } : null;
+
+const DEFAULT_IMAGE_ASPECT_RATIO_SIZE_MAP = {
+  '16:9': '1792x1024',
+  '9:16': '1024x1792',
+  '1:1': '1024x1024',
+};
+
+const aspectRatioFromSize = (size) => {
+  const match = String(size || '').trim().match(/^(\d+)\s*x\s*(\d+)$/i);
+  if (!match) return '';
+  const width = Number(match[1]);
+  const height = Number(match[2]);
+  if (!width || !height) return '';
+  if (Math.abs(width - height) <= 8) return '1:1';
+  return width > height ? '16:9' : '9:16';
+};
+
+const resolveImageAspectRatio = (sourceBody, route) => {
+  const parsed = parseObjectBody(sourceBody);
+  const explicit = String(
+    parsed.aspectRatio ||
+    parsed.aspect_ratio ||
+    parsed.generationConfig?.imageConfig?.aspectRatio ||
+    route?.params?.defaultAspectRatio ||
+    '16:9'
+  ).trim();
+  if (explicit) return explicit;
+  return aspectRatioFromSize(parsed.size || route?.params?.size) || '16:9';
+};
+
+const sizeForImageAspectRatio = (aspectRatio, route) => {
+  const map = route?.params?.aspectRatioSizeMap || DEFAULT_IMAGE_ASPECT_RATIO_SIZE_MAP;
+  return map?.[aspectRatio] || route?.params?.size || DEFAULT_IMAGE_ASPECT_RATIO_SIZE_MAP[aspectRatio] || '1024x1024';
+};
 
 const buildImageTaskUpstreamForRoute = async ({
   route,
@@ -834,6 +870,8 @@ const buildImageTaskUpstreamForRoute = async ({
     metadata: payload?.metadata,
     imageModel: route,
   });
+  const aspectRatio = resolveImageAspectRatio(sourcePayload, route);
+  const size = sizeForImageAspectRatio(aspectRatio, route);
 
   return {
     url: normalizeUpstreamUrl(upstreamUrl),
@@ -846,7 +884,11 @@ const buildImageTaskUpstreamForRoute = async ({
     body: route ? buildImageBodyForRoute(sourcePayload, route) : JSON.stringify(sourcePayload),
     upstreamPublicUrl: upstreamUrl,
     responseFormat: route?.responseFormat || route?.requestFormat || 'openai-image',
-    imageModel: imageRoutePublicView(route),
+    imageModel: imageRoutePublicView({
+      ...route,
+      aspectRatio,
+      size,
+    }),
   };
 };
 
@@ -863,26 +905,50 @@ const buildOpenAiImageBody = (sourceBody, route) => {
     throw new Error('Missing image prompt.');
   }
 
+  const aspectRatio = resolveImageAspectRatio(parsed, route);
+  const {
+    aspectRatio: _aspectRatio,
+    referenceImages: _referenceImages,
+    generationConfig: _generationConfig,
+    ...providerPayload
+  } = parsed;
+
   return JSON.stringify({
-    ...parsed,
+    ...providerPayload,
     model: route.apiModel || parsed.model || 'gpt-image-2',
     prompt,
     n: Number(parsed.n || route.params?.n || 1) || 1,
-    size: parsed.size || route.params?.size || '1024x1024',
+    size: parsed.size || sizeForImageAspectRatio(aspectRatio, route),
   });
 };
 
 const buildChatImageBody = (sourceBody, route) => {
-  const prompt = extractPromptFromUpstreamBody(sourceBody);
+  const parsed = parseObjectBody(sourceBody);
+  const prompt = extractPromptFromUpstreamBody(parsed);
   if (!prompt) {
     throw new Error('Missing image prompt.');
   }
+  const aspectRatio = resolveImageAspectRatio(parsed, route);
+  const size = parsed.size || sizeForImageAspectRatio(aspectRatio, route);
+  const promptWithFormat = `${prompt}
+
+IMAGE FORMAT REQUIREMENT: Generate exactly one image in ${aspectRatio} aspect ratio (${size}). Keep the requested composition within that frame.`;
+  const content = [
+    {
+      type: 'text',
+      text: promptWithFormat,
+    },
+    ...extractReferenceImagesFromUpstreamBody(parsed).map((url) => ({
+      type: 'image_url',
+      image_url: { url },
+    })),
+  ];
 
   return JSON.stringify({
     model: route.apiModel || 'gemini-3.1-flash-image',
     messages: [{
       role: 'user',
-      content: prompt,
+      content,
     }],
   });
 };
@@ -1047,6 +1113,40 @@ const extractPromptFromUpstreamBody = (body) => {
   });
 
   return texts.join('\n\n').trim();
+};
+
+const extractReferenceImagesFromUpstreamBody = (body) => {
+  let parsed;
+  try {
+    parsed = typeof body === 'string' ? JSON.parse(body) : body;
+  } catch {
+    return [];
+  }
+
+  const images = [];
+  const rememberImage = (url) => {
+    if (typeof url !== 'string' || !url.trim()) return;
+    if (!images.includes(url)) images.push(url);
+  };
+
+  (parsed?.referenceImages || []).forEach(rememberImage);
+
+  (parsed?.contents || []).forEach((content) => {
+    (content?.parts || []).forEach((part) => {
+      if (part?.inlineData?.data) {
+        rememberImage(`data:${part.inlineData.mimeType || 'image/png'};base64,${part.inlineData.data}`);
+      }
+    });
+  });
+
+  (parsed?.messages || []).forEach((message) => {
+    if (!Array.isArray(message?.content)) return;
+    message.content.forEach((part) => {
+      rememberImage(part?.image_url?.url || part?.url);
+    });
+  });
+
+  return images;
 };
 
 const normalizeText = (value) => String(value || '')

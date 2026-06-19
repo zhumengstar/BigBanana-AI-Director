@@ -117,6 +117,32 @@
     return texts.join('\n\n').trim();
   };
 
+  var extractReferenceImagesFromBody = function (bodyText) {
+    var body = parseJson(bodyText);
+    var images = [];
+    var rememberImage = function (url) {
+      if (typeof url !== 'string' || !url.trim()) return;
+      if (images.indexOf(url) < 0) images.push(url);
+    };
+
+    (body.referenceImages || []).forEach(rememberImage);
+    (body.contents || []).forEach(function (content) {
+      (content.parts || []).forEach(function (part) {
+        if (part && part.inlineData && part.inlineData.data) {
+          rememberImage('data:' + (part.inlineData.mimeType || 'image/png') + ';base64,' + part.inlineData.data);
+        }
+      });
+    });
+
+    (body.messages || []).forEach(function (message) {
+      (message.content || []).forEach(function (part) {
+        if (part && part.image_url && part.image_url.url) rememberImage(part.image_url.url);
+      });
+    });
+
+    return images;
+  };
+
   var getActiveImageModel = function () {
     try {
       var registry = window.BIGBANANA_MODEL_REGISTRY_CONFIG;
@@ -186,16 +212,47 @@
     return String(baseUrl).replace(/\/+$/, '') + getImageModelEndpoint(model);
   };
 
+  var aspectRatioFromSize = function (size) {
+    var match = String(size || '').trim().match(/^(\d+)\s*x\s*(\d+)$/i);
+    if (!match) return '';
+    var width = Number(match[1]);
+    var height = Number(match[2]);
+    if (!width || !height) return '';
+    if (Math.abs(width - height) <= 8) return '1:1';
+    return width > height ? '16:9' : '9:16';
+  };
+
+  var sizeForAspectRatio = function (aspectRatio, params) {
+    var map = (params && params.aspectRatioSizeMap) || {
+      '16:9': '1792x1024',
+      '9:16': '1024x1792',
+      '1:1': '1024x1024'
+    };
+    return map[aspectRatio] || (params && params.size) || '1024x1024';
+  };
+
+  var resolveImageAspectRatio = function (body, params) {
+    return body.aspectRatio ||
+      body.aspect_ratio ||
+      (body.generationConfig && body.generationConfig.imageConfig && body.generationConfig.imageConfig.aspectRatio) ||
+      aspectRatioFromSize(body.size || (params && params.size)) ||
+      (params && params.defaultAspectRatio) ||
+      '16:9';
+  };
+
   var buildOpenAiImageBody = function (bodyText) {
     var originalBody = parseJson(bodyText);
     var activeModel = getActiveImageModel() || {};
     var params = activeModel.params || {};
     var prompt = extractPromptFromGeminiBody(bodyText) || originalBody.prompt || '';
+    var aspectRatio = resolveImageAspectRatio(originalBody, params);
     var output = {
       model: activeModel.apiModel || originalBody.model || activeModel.id || 'gpt-image-2',
       prompt: prompt,
+      aspectRatio: aspectRatio,
+      referenceImages: extractReferenceImagesFromBody(bodyText),
       n: Number(originalBody.n || params.n || 1) || 1,
-      size: originalBody.size || params.size || '1024x1024'
+      size: originalBody.size || sizeForAspectRatio(aspectRatio, params)
     };
 
     if (originalBody.quality || params.quality) output.quality = originalBody.quality || params.quality;
@@ -206,10 +263,25 @@
   var buildGeminiChatImageBody = function (bodyText) {
     var originalBody = parseJson(bodyText);
     var activeModel = getActiveImageModel() || {};
+    var params = activeModel.params || {};
     var prompt = extractPromptFromGeminiBody(bodyText) || originalBody.prompt || '';
+    var aspectRatio = resolveImageAspectRatio(originalBody, params);
+    var size = originalBody.size || sizeForAspectRatio(aspectRatio, params);
+    var content = [{
+      type: 'text',
+      text: prompt + '\n\nIMAGE FORMAT REQUIREMENT: Generate exactly one image in ' + aspectRatio + ' aspect ratio (' + size + '). Keep the requested composition within that frame.'
+    }];
+    extractReferenceImagesFromBody(bodyText).forEach(function (url) {
+      content.push({
+        type: 'image_url',
+        image_url: { url: url }
+      });
+    });
     return JSON.stringify({
       model: activeModel.apiModel || originalBody.model || 'gemini-3.1-flash-image',
-      messages: [{ role: 'user', content: prompt }]
+      aspectRatio: aspectRatio,
+      size: size,
+      messages: [{ role: 'user', content: content }]
     });
   };
 

@@ -48,6 +48,8 @@ export interface ChatModelParams {
 export interface ImageModelParams {
   defaultAspectRatio: AspectRatio;
   supportedAspectRatios: AspectRatio[];
+  size?: string;
+  aspectRatioSizeMap?: Partial<Record<AspectRatio, string>>;
 }
 
 /**
@@ -237,6 +239,12 @@ export const DEFAULT_CHAT_PARAMS: ChatModelParams = {
 export const DEFAULT_IMAGE_PARAMS: ImageModelParams = {
   defaultAspectRatio: '16:9',
   supportedAspectRatios: ['16:9', '9:16'],
+  size: '1024x1024',
+  aspectRatioSizeMap: {
+    '16:9': '1792x1024',
+    '9:16': '1024x1792',
+    '1:1': '1024x1024',
+  },
 };
 
 /**
