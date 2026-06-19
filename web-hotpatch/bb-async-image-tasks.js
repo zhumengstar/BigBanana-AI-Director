@@ -578,8 +578,26 @@
   var hasActiveStoredTask = function () {
     return Object.keys(state.tasks || {}).some(function (taskId) {
       var task = state.tasks[taskId];
-      return task && !isTerminalTaskStatus(task.status);
+      return task && !isTerminalTaskStatus(task.status) && task.status !== 'unknown';
     });
+  };
+
+  var syncStoredTasksFromServer = async function () {
+    try {
+      var response = await originalFetch(TASK_ENDPOINT + '?limit=200', {
+        method: 'GET',
+        cache: 'no-store'
+      });
+      if (!response.ok) return;
+      var result = await response.json();
+      (result.tasks || []).forEach(function (task) {
+        if (task && task.id) rememberTask(task);
+      });
+    } catch (error) {
+      recordDiagnostic('stored-task-sync-failed', {
+        message: error && error.message ? error.message : String(error)
+      });
+    }
   };
 
   var recoverStaleGeneratingState = function (project) {
@@ -692,5 +710,6 @@
   };
 
   resumeStoredTasks();
+  syncStoredTasksFromServer();
   window.__BIGBANANA_RECOVER_STALE_GENERATING_STATE__ = recoverStaleGeneratingState;
 })();

@@ -72,6 +72,25 @@ function EpisodeWorkspace() {
   }, [episodeId]);
 
   useEffect(() => {
+    if (!episodeId) return;
+    let reloadTimer: number | null = null;
+    const reloadCurrentEpisode = () => {
+      if (reloadTimer) window.clearTimeout(reloadTimer);
+      reloadTimer = window.setTimeout(() => {
+        loadEpisode(episodeId)
+          .then(ep => setCurrentEpisode(ep))
+          .catch(error => console.warn('Reload episode after server task sync failed.', error));
+      }, 100);
+    };
+
+    window.addEventListener('bigbanana:project-store-updated', reloadCurrentEpisode as EventListener);
+    return () => {
+      if (reloadTimer) window.clearTimeout(reloadTimer);
+      window.removeEventListener('bigbanana:project-store-updated', reloadCurrentEpisode as EventListener);
+    };
+  }, [episodeId]);
+
+  useEffect(() => {
     if (currentEpisode) {
       setLogCallback((log) => {
         updateEpisode(prev => ({

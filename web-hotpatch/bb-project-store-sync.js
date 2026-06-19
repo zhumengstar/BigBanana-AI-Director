@@ -7,7 +7,7 @@
   var MEDIA_URL_PREFIX = '/api/project-store/media/';
   var IMAGE_TASKS_ENDPOINT = '/api/project-store/image-tasks';
   var SAVE_DELAY_MS = 1200;
-  var IMAGE_TASK_SYNC_INTERVAL_MS = 3000;
+  var IMAGE_TASK_SYNC_INTERVAL_MS = 10000;
 
   var saveTimer = null;
   var imageTaskSyncTimer = null;
@@ -118,6 +118,28 @@
     });
 
     return JSON.stringify(summary);
+  };
+
+  var storesContentSignature = function (payload) {
+    try {
+      return JSON.stringify((payload && payload.stores) || {});
+    } catch (error) {
+      return '';
+    }
+  };
+
+  var notifyProjectStoreUpdated = function (reason, payload) {
+    try {
+      window.dispatchEvent(new CustomEvent('bigbanana:project-store-updated', {
+        detail: {
+          reason: reason,
+          at: Date.now(),
+          items: countPayloadItems(payload)
+        }
+      }));
+    } catch (error) {
+      // UI refresh notifications are best-effort; persistence must continue.
+    }
   };
 
   var replaceWithPayload = async function (payload) {
@@ -591,12 +613,20 @@
     try {
       var payload = await exportPayload();
       if (countPayloadItems(payload) === 0) return;
+      var localStoresSignature = storesContentSignature(payload);
       payload = clearTransientGenerationFailures(payload);
       payload = recoverStaleGeneratingState(payload);
       var imageTasks = await fetchImageTasks();
       payload = syncImageTaskState(payload, imageTasks);
       payload = await recoverCompletedImageTasks(payload, imageTasks);
       payload = await materializePayloadMedia(payload);
+
+      if (storesContentSignature(payload) !== localStoresSignature) {
+        restoringFromServer = true;
+        await replaceWithPayload(payload);
+        restoringFromServer = false;
+        notifyProjectStoreUpdated('image-task-sync', payload);
+      }
 
       var signature = contentSignature(payload);
       if (signature === lastSavedSignature) return;
@@ -611,6 +641,7 @@
           endpoint: ENDPOINT,
           items: countPayloadItems(payload)
         };
+        notifyProjectStoreUpdated('server-persisted', payload);
       } else {
         console.warn('[project-store-sync] save failed with status', response.status);
       }
@@ -637,6 +668,7 @@
 
   var startImageTaskSyncLoop = function () {
     if (imageTaskSyncTimer) return;
+    syncImageTasksNow();
     imageTaskSyncTimer = window.setInterval(syncImageTasksNow, IMAGE_TASK_SYNC_INTERVAL_MS);
   };
 
@@ -661,6 +693,7 @@
             restoringFromServer = true;
             await replaceWithPayload(serverPayload);
             restoringFromServer = false;
+            notifyProjectStoreUpdated('server-bootstrap', serverPayload);
           }
 
           window.__BIGBANANA_PROJECT_STORE_SYNC__ = {
