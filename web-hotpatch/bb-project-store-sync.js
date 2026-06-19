@@ -497,6 +497,29 @@
     return false;
   };
 
+  var applyActiveImageTaskToSlot = function (slot, task) {
+    if (!slot || !task || !isActiveImageTask(task)) return false;
+    var status = String(slot.status || '').toLowerCase();
+    if (
+      status !== 'failed' &&
+      status !== 'pending' &&
+      status !== 'queued' &&
+      status !== 'generating' &&
+      status !== 'generating_image' &&
+      status !== 'generating_panels'
+    ) {
+      return false;
+    }
+
+    slot.status = Array.isArray(slot.panels) ? 'generating_image' : 'generating';
+    slot.imageTaskId = task.id;
+    slot.serverImageTaskId = task.id;
+    delete slot.error;
+    delete slot.failureReason;
+    delete slot.lastTransientFailure;
+    return true;
+  };
+
   var syncTerminalImageTaskSlots = function (value, terminalById) {
     if (!value || typeof value !== 'object') return 0;
     var changed = 0;
@@ -515,6 +538,29 @@
 
     Object.keys(value).forEach(function (key) {
       changed += syncTerminalImageTaskSlots(value[key], terminalById);
+    });
+
+    return changed;
+  };
+
+  var syncActiveImageTaskSlots = function (value, activeById) {
+    if (!value || typeof value !== 'object') return 0;
+    var changed = 0;
+
+    if (Array.isArray(value)) {
+      for (var i = 0; i < value.length; i += 1) {
+        changed += syncActiveImageTaskSlots(value[i], activeById);
+      }
+      return changed;
+    }
+
+    var taskId = imageTaskIdForSlot(value);
+    if (taskId && activeById[taskId]) {
+      changed += applyActiveImageTaskToSlot(value, activeById[taskId]) ? 1 : 0;
+    }
+
+    Object.keys(value).forEach(function (key) {
+      changed += syncActiveImageTaskSlots(value[key], activeById);
     });
 
     return changed;
@@ -562,11 +608,16 @@
   var syncImageTaskState = function (payload, tasks) {
     if (!payload || !payload.stores) return payload;
     var activeTasks = tasks.filter(isActiveImageTask);
+    var activeById = {};
+    activeTasks.forEach(function (task) {
+      activeById[task.id] = task;
+    });
     var terminalById = {};
     tasks.filter(isTerminalImageTask).forEach(function (task) {
       terminalById[task.id] = task;
     });
 
+    var activeSynced = syncActiveImageTaskSlots(payload.stores, activeById);
     var terminalSynced = syncTerminalImageTaskSlots(payload.stores, terminalById);
     var staleCleared = activeTasks.length === 0 ? clearStaleGeneratingSlots(payload.stores) : 0;
     var imageFieldsNormalized = normalizeImageReferenceFields(payload.stores);
@@ -574,6 +625,7 @@
     window.__BIGBANANA_SERVER_IMAGE_TASK_STATE__ = {
       ok: true,
       active: activeTasks.length,
+      activeSynced: activeSynced,
       terminal: Object.keys(terminalById).length,
       terminalSynced: terminalSynced,
       staleCleared: staleCleared,
@@ -581,8 +633,9 @@
       at: Date.now()
     };
 
-    if (terminalSynced > 0 || staleCleared > 0 || imageFieldsNormalized > 0) {
+    if (activeSynced > 0 || terminalSynced > 0 || staleCleared > 0 || imageFieldsNormalized > 0) {
       payload.imageTasksSyncedAt = Date.now();
+      payload.imageTasksActiveSyncedCount = (payload.imageTasksActiveSyncedCount || 0) + activeSynced;
       payload.imageTasksTerminalSyncedCount = (payload.imageTasksTerminalSyncedCount || 0) + terminalSynced;
       payload.imageTasksStaleClearedCount = (payload.imageTasksStaleClearedCount || 0) + staleCleared;
       payload.imageFieldsNormalizedCount = (payload.imageFieldsNormalizedCount || 0) + imageFieldsNormalized;

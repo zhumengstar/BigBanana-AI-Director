@@ -54,6 +54,16 @@ interface Props {
   onGeneratingChange?: (isGenerating: boolean) => void;
 }
 
+const parseServerImageTaskId = (value?: string | null): string | null => {
+  const match = String(value || '').match(/^bb-image-task:\/\/(.+)$/);
+  if (!match) return null;
+  try {
+    return decodeURIComponent(match[1]);
+  } catch {
+    return match[1];
+  }
+};
+
 const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError, onGeneratingChange }) => {
   const { showAlert } = useAlert();
   const [activeShotId, setActiveShotId] = useState<string | null>(null);
@@ -458,8 +468,18 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
           ? { continuityReferenceImage, referencePackType: 'shot' }
           : { referencePackType: 'shot' }
       );
+      const serverImageTaskId = parseServerImageTaskId(url);
 
       updateShot(shot.id, (s) => {
+        if (serverImageTaskId) {
+          const queuedKeyframe = {
+            ...createKeyframe(kfId, type, prompt, undefined, 'generating'),
+            promptVersions,
+            serverImageTaskId,
+            imageTaskId: serverImageTaskId,
+          };
+          return updateKeyframeInShot(s, type, queuedKeyframe);
+        }
         const completedKeyframe = {
           ...createKeyframe(kfId, type, prompt, url, 'completed'),
           promptVersions,
@@ -1302,6 +1322,7 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
           promptTemplates,
         }
       );
+      const serverImageTaskId = parseServerImageTaskId(imageUrl);
 
       // 4. 更新状态为完成
       updateShot(shotId, (s) => ({
@@ -1313,13 +1334,18 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
             rows: layout.rows,
             cols: layout.cols,
           },
-          imageUrl,
+          ...(serverImageTaskId
+            ? {
+              serverImageTaskId,
+              imageTaskId: serverImageTaskId,
+            }
+            : { imageUrl }),
           prompt: `${layout.label} Storyboard - ${shot.actionSummary}`,
-          status: 'completed' as const
+          status: serverImageTaskId ? 'generating_image' as const : 'completed' as const
         }
       }));
 
-      showAlert(`${layout.label}分镜图片生成完成！`, { type: 'success' });
+      showAlert(serverImageTaskId ? `${layout.label}分镜图片已提交后台生成` : `${layout.label}分镜图片生成完成！`, { type: 'success' });
 
     } catch (e: any) {
       console.error('网格分镜图片生成失败:', e);

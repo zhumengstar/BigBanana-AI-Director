@@ -204,6 +204,10 @@ export interface Keyframe {
   visualPrompt: string;
   promptVersions?: PromptVersion[]; // Prompt edit history with rollback support
   imageUrl?: string; // 关键帧图像，存储为base64格式（data:image/png;base64,...）
+  serverImageTaskId?: string;
+  imageTaskId?: string;
+  error?: string;
+  failureReason?: string;
   status: 'pending' | 'generating' | 'completed' | 'failed';
 }
 
@@ -251,6 +255,10 @@ export interface NineGridData {
   layout?: StoryboardGridLayoutMeta; // 当前网格布局（4/6/9）
   imageUrl?: string;        // 生成的网格图片 (base64)
   prompt?: string;          // 生成时使用的完整提示词
+  serverImageTaskId?: string;
+  imageTaskId?: string;
+  error?: string;
+  failureReason?: string;
   status: 'pending' | 'generating_panels' | 'panels_ready' | 'generating_image' | 'completed' | 'failed';
   // generating_panels: AI正在生成网格镜头描述
   // panels_ready: 镜头描述已生成，等待用户确认/编辑后再生成图片
