@@ -171,11 +171,48 @@ const mergeByKey = <T>(
   return Array.from(merged.values());
 };
 
+const firstImageReference = (item: unknown): string | undefined => {
+  if (!item || typeof item !== 'object') return undefined;
+  const record = item as Record<string, unknown>;
+  return [
+    record.imageUrl,
+    record.referenceImage,
+    record.generatedImage,
+    record.thumbnailUrl,
+    record.previewUrl,
+    record.coverImage,
+    record.shapeReferenceImage,
+  ].find(value => typeof value === 'string' && value.trim() && !value.startsWith('bb-image-task://')) as string | undefined;
+};
+
+const normalizeImageReferenceFields = <T>(item: T): T => {
+  if (!item || typeof item !== 'object' || Array.isArray(item)) return item;
+  const imageUrl = firstImageReference(item);
+  if (!imageUrl) return item;
+
+  const next = { ...(item as Record<string, unknown>) };
+  if (!firstImageReference({ imageUrl: next.imageUrl })) next.imageUrl = imageUrl;
+  if (!firstImageReference({ referenceImage: next.referenceImage })) next.referenceImage = imageUrl;
+  if (!firstImageReference({ generatedImage: next.generatedImage })) next.generatedImage = imageUrl;
+
+  const status = String(next.status || '').toLowerCase();
+  if (['failed', 'generating', 'queued', 'generating_image', 'generating_panels', 'pending'].includes(status)) {
+    next.status = 'completed';
+    delete next.error;
+    delete next.failureReason;
+    delete next.lastTransientFailure;
+  }
+
+  return next as T;
+};
+
 const normalizeEpisode = (ep: Episode): Episode => {
   const scriptData = ep.scriptData
     ? {
         ...ep.scriptData,
-        props: ep.scriptData.props || [],
+        characters: (ep.scriptData.characters || []).map(normalizeImageReferenceFields),
+        scenes: (ep.scriptData.scenes || []).map(normalizeImageReferenceFields),
+        props: (ep.scriptData.props || []).map(normalizeImageReferenceFields),
       }
     : null;
 
@@ -206,6 +243,11 @@ const normalizeEpisode = (ep: Episode): Episode => {
   return {
     ...ep,
     scriptData,
+    shots: (ep.shots || []).map(shot => ({
+      ...shot,
+      keyframes: (shot.keyframes || []).map(normalizeImageReferenceFields),
+      nineGrid: shot.nineGrid ? normalizeImageReferenceFields(shot.nineGrid) : shot.nineGrid,
+    })),
     renderLogs: ep.renderLogs || [],
     characterRefs: mergeByKey(ep.characterRefs, inferredCharacterRefs, r => r.characterId),
     sceneRefs: mergeByKey(ep.sceneRefs, inferredSceneRefs, r => r.sceneId),

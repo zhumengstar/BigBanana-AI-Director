@@ -281,6 +281,59 @@
     return false;
   };
 
+  var firstImageReference = function (value) {
+    if (!value || typeof value !== 'object') return '';
+    var imageKeys = ['imageUrl', 'referenceImage', 'generatedImage', 'thumbnailUrl', 'previewUrl', 'coverImage', 'shapeReferenceImage', 'url'];
+    for (var i = 0; i < imageKeys.length; i += 1) {
+      var imageUrl = value[imageKeys[i]];
+      if (typeof imageUrl === 'string' && imageUrl && imageUrl.indexOf('bb-image-task://') !== 0) return imageUrl;
+    }
+    return '';
+  };
+
+  var normalizeImageReferenceFields = function (value) {
+    if (!value || typeof value !== 'object') return 0;
+    var changed = 0;
+
+    if (Array.isArray(value)) {
+      for (var i = 0; i < value.length; i += 1) {
+        changed += normalizeImageReferenceFields(value[i]);
+      }
+      return changed;
+    }
+
+    var imageUrl = firstImageReference(value);
+    if (imageUrl) {
+      if (!firstImageReference({ imageUrl: value.imageUrl })) {
+        value.imageUrl = imageUrl;
+        changed += 1;
+      }
+      if (!firstImageReference({ referenceImage: value.referenceImage })) {
+        value.referenceImage = imageUrl;
+        changed += 1;
+      }
+      if (!firstImageReference({ generatedImage: value.generatedImage })) {
+        value.generatedImage = imageUrl;
+        changed += 1;
+      }
+
+      var status = String(value.status || '').toLowerCase();
+      if (status === 'failed' || status === 'generating' || status === 'queued' || status === 'generating_image' || status === 'generating_panels' || status === 'pending') {
+        value.status = 'completed';
+        delete value.error;
+        delete value.failureReason;
+        delete value.lastTransientFailure;
+        changed += 1;
+      }
+    }
+
+    Object.keys(value).forEach(function (key) {
+      changed += normalizeImageReferenceFields(value[key]);
+    });
+
+    return changed;
+  };
+
   var normalizeText = function (value) {
     return String(value || '')
       .toLowerCase()
@@ -516,6 +569,7 @@
 
     var terminalSynced = syncTerminalImageTaskSlots(payload.stores, terminalById);
     var staleCleared = activeTasks.length === 0 ? clearStaleGeneratingSlots(payload.stores) : 0;
+    var imageFieldsNormalized = normalizeImageReferenceFields(payload.stores);
 
     window.__BIGBANANA_SERVER_IMAGE_TASK_STATE__ = {
       ok: true,
@@ -523,13 +577,15 @@
       terminal: Object.keys(terminalById).length,
       terminalSynced: terminalSynced,
       staleCleared: staleCleared,
+      imageFieldsNormalized: imageFieldsNormalized,
       at: Date.now()
     };
 
-    if (terminalSynced > 0 || staleCleared > 0) {
+    if (terminalSynced > 0 || staleCleared > 0 || imageFieldsNormalized > 0) {
       payload.imageTasksSyncedAt = Date.now();
       payload.imageTasksTerminalSyncedCount = (payload.imageTasksTerminalSyncedCount || 0) + terminalSynced;
       payload.imageTasksStaleClearedCount = (payload.imageTasksStaleClearedCount || 0) + staleCleared;
+      payload.imageFieldsNormalizedCount = (payload.imageFieldsNormalizedCount || 0) + imageFieldsNormalized;
     }
 
     return payload;

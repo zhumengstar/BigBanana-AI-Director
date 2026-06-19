@@ -15,6 +15,7 @@ const CORS_ORIGIN = process.env.PROJECT_STORE_CORS_ORIGIN || '*';
 const IMAGE_TASK_WORKERS = Math.max(1, Number.parseInt(process.env.PROJECT_STORE_IMAGE_TASK_WORKERS || '1', 10));
 const IMAGE_TASK_TIMEOUT_MS = Math.max(1000, Number.parseInt(process.env.PROJECT_STORE_IMAGE_TASK_TIMEOUT_MS || '600000', 10));
 const IMAGE_TASK_TIMEOUT_MESSAGE = 'Image task timed out after 10 minutes.';
+const PUBLIC_BASE_URL = String(process.env.PROJECT_STORE_PUBLIC_BASE_URL || '').trim().replace(/\/+$/, '');
 const backupPath = path.join(DATA_DIR, BACKUP_FILE);
 const imageTasksPath = path.join(DATA_DIR, IMAGE_TASKS_FILE);
 const modelConfigPath = path.join(DATA_DIR, MODEL_CONFIG_FILE);
@@ -171,8 +172,8 @@ const normalizeBackupImageStates = (payload) => {
       if (task?.status === 'completed' && task.imageUrl) {
         item.status = 'completed';
         item.imageUrl = task.imageUrl;
-        item.referenceImage = item.referenceImage || task.imageUrl;
-        item.generatedImage = item.generatedImage || task.imageUrl;
+        item.referenceImage = isUsableImageUrl(item.referenceImage) ? item.referenceImage : task.imageUrl;
+        item.generatedImage = isUsableImageUrl(item.generatedImage) ? item.generatedImage : task.imageUrl;
         item.imageTaskResolvedAt = item.imageTaskResolvedAt || Date.now();
         delete item.error;
         delete item.failureReason;
@@ -198,6 +199,11 @@ const normalizeBackupImageStates = (payload) => {
       return;
     }
 
+    const existingImageUrl = firstUsableImageUrl(item);
+    if (existingImageUrl && completeImageStateFromUrl(item, existingImageUrl)) {
+      changed = true;
+    }
+
     const status = String(item.status || '').toLowerCase();
     if (!['generating', 'queued', 'generating_image', 'generating_panels'].includes(status)) return;
 
@@ -205,11 +211,8 @@ const normalizeBackupImageStates = (payload) => {
     if (taskId && activeTaskIds.has(taskId)) return;
 
     if (hasImageUrl(item)) {
-      item.status = 'completed';
-      item.imageTaskResolvedAt = item.imageTaskResolvedAt || Date.now();
-      delete item.error;
-      delete item.failureReason;
-      delete item.lastTransientFailure;
+      const imageUrl = firstUsableImageUrl(item);
+      if (imageUrl) completeImageStateFromUrl(item, imageUrl);
     } else {
       item.status = 'failed';
       item.imageTaskResolvedAt = item.imageTaskResolvedAt || Date.now();
@@ -922,6 +925,9 @@ const buildOpenAiImageBody = (sourceBody, route) => {
   }
 
   const aspectRatio = resolveImageAspectRatio(parsed, route);
+  const referenceImages = extractReferenceImagesFromUpstreamBody(parsed)
+    .map(publicImageReferenceUrl)
+    .filter(Boolean);
   const {
     aspectRatio: _aspectRatio,
     referenceImages: _referenceImages,
@@ -935,6 +941,7 @@ const buildOpenAiImageBody = (sourceBody, route) => {
     prompt,
     n: Number(parsed.n || route.params?.n || 1) || 1,
     size: parsed.size || sizeForImageAspectRatio(aspectRatio, route),
+    ...(referenceImages.length > 0 ? { referenceImages } : {}),
   });
 };
 
@@ -954,7 +961,7 @@ IMAGE FORMAT REQUIREMENT: Generate exactly one image in ${aspectRatio} aspect ra
       type: 'text',
       text: promptWithFormat,
     },
-    ...extractReferenceImagesFromUpstreamBody(parsed).map((url) => ({
+    ...extractReferenceImagesFromUpstreamBody(parsed).map(publicImageReferenceUrl).filter(Boolean).map((url) => ({
       type: 'image_url',
       image_url: { url },
     })),
@@ -1201,11 +1208,62 @@ const isUsableImageUrl = (value) => Boolean(
   && !parseImageTaskPlaceholder(value)
 );
 
+const publicImageReferenceUrl = (value) => {
+  if (typeof value !== 'string') return '';
+  const url = value.trim();
+  if (!url || parseImageTaskPlaceholder(url)) return '';
+  if (/^data:image\//i.test(url)) return url;
+  if (/^https?:\/\//i.test(url)) return url;
+  if (url.startsWith('/') && PUBLIC_BASE_URL) return `${PUBLIC_BASE_URL}${url}`;
+  return url;
+};
+
+const firstUsableImageUrl = (item) => [
+  item?.imageUrl,
+  item?.referenceImage,
+  item?.generatedImage,
+  item?.thumbnailUrl,
+  item?.previewUrl,
+  item?.coverImage,
+  item?.shapeReferenceImage,
+].find(isUsableImageUrl) || '';
+
 const hasImageUrl = (item) => Boolean(
-  isUsableImageUrl(item?.imageUrl)
-  || isUsableImageUrl(item?.referenceImage)
-  || isUsableImageUrl(item?.generatedImage)
+  firstUsableImageUrl(item)
 );
+
+const completeImageStateFromUrl = (item, imageUrl) => {
+  if (!item || typeof item !== 'object' || Array.isArray(item) || !isUsableImageUrl(imageUrl)) return false;
+  const previous = JSON.stringify({
+    imageUrl: item.imageUrl,
+    referenceImage: item.referenceImage,
+    generatedImage: item.generatedImage,
+    status: item.status,
+    error: item.error,
+    failureReason: item.failureReason,
+    lastTransientFailure: item.lastTransientFailure,
+  });
+  if (!isUsableImageUrl(item.imageUrl)) item.imageUrl = imageUrl;
+  if (!isUsableImageUrl(item.referenceImage)) item.referenceImage = imageUrl;
+  if (!isUsableImageUrl(item.generatedImage)) item.generatedImage = imageUrl;
+  const status = String(item.status || '').toLowerCase();
+  if (['failed', 'generating', 'queued', 'generating_image', 'generating_panels', 'pending'].includes(status)) {
+    item.status = 'completed';
+  }
+  item.imageTaskResolvedAt = item.imageTaskResolvedAt || Date.now();
+  delete item.error;
+  delete item.failureReason;
+  delete item.lastTransientFailure;
+  return previous !== JSON.stringify({
+    imageUrl: item.imageUrl,
+    referenceImage: item.referenceImage,
+    generatedImage: item.generatedImage,
+    status: item.status,
+    error: item.error,
+    failureReason: item.failureReason,
+    lastTransientFailure: item.lastTransientFailure,
+  });
+};
 
 const imageCandidateScore = (item, task) => {
   if (!item || typeof item !== 'object' || Array.isArray(item)) return 0;
@@ -1277,7 +1335,7 @@ const applyImageTaskToProjectStore = async (task) => {
   best.item.generatedImage = task.imageUrl;
   best.item.serverImageTaskId = task.id;
   best.item.imageTaskId = task.id;
-  best.item.updatedAt = best.item.updatedAt || Date.now();
+  best.item.updatedAt = Date.now();
   delete best.item.lastTransientFailure;
 
   await writeBackup({

@@ -18,6 +18,7 @@ services:
       - ./web-hotpatch/assets/icons-B1NknkI4.js:/usr/share/nginx/html/assets/icons-B1NknkI4.js:ro
       - ./web-hotpatch/assets/icons-Cl1wufkh.js:/usr/share/nginx/html/assets/icons-Cl1wufkh.js:ro
       - ./web-hotpatch/assets/index-YggY4CaN.css:/usr/share/nginx/html/assets/index-YggY4CaN.css:ro
+      - ./web-hotpatch/assets/index-Qx4qkpUb.js:/usr/share/nginx/html/assets/index-Qx4qkpUb.js:ro
       - ./web-hotpatch/assets/index-BtZboLsm.js:/usr/share/nginx/html/assets/index-BtZboLsm.js:ro
       - ./web-hotpatch/assets/index-Ltxb4SqW.js:/usr/share/nginx/html/assets/index-Ltxb4SqW.js:ro
       - ./web-hotpatch/assets/index-Zl-sIpQS.js:/usr/share/nginx/html/assets/index-Zl-sIpQS.js:ro
@@ -77,6 +78,7 @@ services:
       PROJECT_STORE_DATA_DIR: "/data"
       PROJECT_STORE_BACKUP_FILE: "project-store-backup.json"
       PROJECT_STORE_NEW_API_BASE_URL: "http://127.0.0.1:8790"
+      PROJECT_STORE_PUBLIC_BASE_URL: "${PROJECT_STORE_PUBLIC_BASE_URL:-https://bigbanana.muling.store}"
     volumes:
       - ./server/backendServer.mjs:/app/server/backendServer.mjs:ro
       - ./server/mediaProxyServer.mjs:/app/server/mediaProxyServer.mjs:ro
