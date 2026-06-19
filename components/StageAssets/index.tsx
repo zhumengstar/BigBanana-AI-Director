@@ -42,6 +42,11 @@ const getGenerationErrorMessage = (error: unknown): string => {
   return '图片生成失败';
 };
 
+const parseServerImageTaskId = (value: string): string => {
+  const match = String(value || '').match(/^bb-image-task:\/\/(.+)$/);
+  return match ? decodeURIComponent(match[1]) : '';
+};
+
 const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, onGeneratingChange }) => {
   const { showAlert } = useAlert();
   const [batchProgress, setBatchProgress] = useState<{current: number, total: number} | null>(null);
@@ -380,6 +385,7 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
           ? { referencePackType: 'character' }
           : { referencePackType: 'scene' }
       );
+      const serverImageTaskId = parseServerImageTaskId(imageUrl);
 
       // 鏇存柊鐘舵€?
       updateProject(prev => {
@@ -388,6 +394,14 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
         if (type === 'character') {
           const c = newData.characters.find(c => compareIds(c.id, id));
           if (c) {
+            if (serverImageTaskId) {
+              c.status = 'generating';
+              c.serverImageTaskId = serverImageTaskId;
+              c.imageTaskId = serverImageTaskId;
+              delete c.error;
+              delete c.failureReason;
+              return { ...prev, scriptData: newData };
+            }
             c.referenceImage = imageUrl;
             c.status = 'completed';
             delete c.error;
@@ -396,6 +410,14 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
         } else {
           const s = newData.scenes.find(s => compareIds(s.id, id));
           if (s) {
+            if (serverImageTaskId) {
+              s.status = 'generating';
+              s.serverImageTaskId = serverImageTaskId;
+              s.imageTaskId = serverImageTaskId;
+              delete s.error;
+              delete s.failureReason;
+              return { ...prev, scriptData: newData };
+            }
             s.referenceImage = imageUrl;
             s.status = 'completed';
             delete s.error;
@@ -984,6 +1006,7 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
         negativePrompt,
         { referencePackType: 'prop' }
       );
+      const serverImageTaskId = parseServerImageTaskId(imageUrl);
 
       // 鏇存柊鐘舵€?
       updateProject(prev => {
@@ -991,6 +1014,14 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
         const updatedData = cloneScriptData(prev.scriptData);
         const updated = (updatedData.props || []).find(p => compareIds(p.id, propId));
         if (updated) {
+          if (serverImageTaskId) {
+            updated.status = 'generating';
+            updated.serverImageTaskId = serverImageTaskId;
+            updated.imageTaskId = serverImageTaskId;
+            delete updated.error;
+            delete updated.failureReason;
+            return { ...prev, scriptData: updatedData };
+          }
           updated.referenceImage = imageUrl;
           updated.status = 'completed';
           delete updated.error;

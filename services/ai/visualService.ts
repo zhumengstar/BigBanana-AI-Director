@@ -978,8 +978,22 @@ NEGATIVE PROMPT (strictly avoid): ${compactNegativePrompt}`;
         throw buildImageApiError(status, parsedError.message);
       }
 
-      return await res.json();
+      const payload = await res.json();
+      const serverImageTaskId = res.headers.get('X-BigBanana-Image-Task-Id');
+      const serverImageTaskStatus = res.headers.get('X-BigBanana-Image-Task-Status');
+      if (serverImageTaskId && serverImageTaskStatus === 'queued') {
+        return {
+          __bigBananaImageTaskId: serverImageTaskId,
+          __bigBananaImageTaskUrl: `bb-image-task://${encodeURIComponent(serverImageTaskId)}`,
+        };
+      }
+
+      return payload;
     });
+
+    if ((response as any).__bigBananaImageTaskUrl) {
+      return (response as any).__bigBananaImageTaskUrl;
+    }
 
     const openAiImageData = Array.isArray(response.data) ? response.data[0] : null;
     if (openAiImageData?.b64_json) {

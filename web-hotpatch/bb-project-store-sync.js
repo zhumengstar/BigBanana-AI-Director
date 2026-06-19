@@ -7,8 +7,11 @@
   var MEDIA_URL_PREFIX = '/api/project-store/media/';
   var IMAGE_TASKS_ENDPOINT = '/api/project-store/image-tasks';
   var SAVE_DELAY_MS = 1200;
+  var IMAGE_TASK_SYNC_INTERVAL_MS = 3000;
 
   var saveTimer = null;
+  var imageTaskSyncTimer = null;
+  var imageTaskSyncRunning = false;
   var readyResolved = false;
   var initialServerLoadComplete = false;
   var restoringFromServer = false;
@@ -610,6 +613,21 @@
     saveTimer = window.setTimeout(persistNow, SAVE_DELAY_MS);
   };
 
+  var syncImageTasksNow = async function () {
+    if (imageTaskSyncRunning || restoringFromServer || !initialServerLoadComplete) return;
+    imageTaskSyncRunning = true;
+    try {
+      await persistNow();
+    } finally {
+      imageTaskSyncRunning = false;
+    }
+  };
+
+  var startImageTaskSyncLoop = function () {
+    if (imageTaskSyncTimer) return;
+    imageTaskSyncTimer = window.setInterval(syncImageTasksNow, IMAGE_TASK_SYNC_INTERVAL_MS);
+  };
+
   var bootstrapFromServer = async function () {
     try {
       var response = await fetch(ENDPOINT, { method: 'GET', cache: 'no-store' });
@@ -673,6 +691,7 @@
 
   installIndexedDBWriteHook();
   bootstrapFromServer();
+  startImageTaskSyncLoop();
   window.addEventListener('beforeunload', function () {
     if (saveTimer) persistNow();
   });

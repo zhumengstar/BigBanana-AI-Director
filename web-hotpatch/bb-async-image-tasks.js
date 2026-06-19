@@ -454,6 +454,35 @@
     }), { status: 200, headers: headers });
   };
 
+  var pendingResponseFromTaskId = function (taskId, responseFormat) {
+    var pendingUrl = 'bb-image-task://' + encodeURIComponent(taskId);
+    var headers = {
+      'Content-Type': 'application/json; charset=utf-8',
+      'X-BigBanana-Image-Task-Id': taskId,
+      'X-BigBanana-Image-Task-Status': 'queued'
+    };
+
+    if (responseFormat === 'gemini-image') {
+      return new Response(JSON.stringify({
+        candidates: [{
+          content: {
+            parts: [{
+              inlineData: {
+                mimeType: 'text/plain',
+                data: window.btoa(pendingUrl)
+              }
+            }]
+          }
+        }]
+      }), { status: 202, headers: headers });
+    }
+
+    return new Response(JSON.stringify({
+      created: Math.floor(Date.now() / 1000),
+      data: [{ url: pendingUrl }]
+    }), { status: 202, headers: headers });
+  };
+
   var resumeStoredTasks = function () {
     Object.keys(state.tasks || {}).forEach(function (taskId) {
       var task = state.tasks[taskId];
@@ -567,8 +596,13 @@
 
     try {
       var taskId = await createTask(request, bodyText, route);
-      var task = await pollTask(taskId, null);
-      return responseFromTask(task, route.clientFormat);
+      pollTask(taskId, null).then(function (task) {
+        rememberTask(task);
+      }).catch(function (error) {
+        state.lastError = error && error.message ? error.message : String(error);
+        recordDiagnostic('poll-failed', { taskId: taskId, message: state.lastError });
+      });
+      return pendingResponseFromTaskId(taskId, route.clientFormat);
     } catch (error) {
       state.lastError = error && error.message ? error.message : String(error);
       recordDiagnostic('failed', { message: state.lastError });
