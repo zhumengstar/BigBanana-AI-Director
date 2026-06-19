@@ -1851,6 +1851,62 @@ export const createProjectStoreHandler = () => async (req, res, next) => {
 
       try {
         const upstream = payload?.upstream || {};
+        const sourcePayload = parseObjectBody(upstream.body || payload?.payload || {});
+        const taskPath = (() => {
+          const explicitPath = String(payload?.path || '').trim();
+          if (explicitPath.startsWith('/')) return explicitPath;
+          try {
+            return new URL(String(upstream.url || '')).pathname || '/v1/images/generations';
+          } catch {
+            return '/v1/images/generations';
+          }
+        })();
+        const routes = await resolveImageModelRoutes(sourcePayload, payload?.metadata);
+
+        if (routes.length > 0) {
+          const upstreams = [];
+          for (const route of routes) {
+            upstreams.push(await buildImageTaskUpstreamForRoute({
+              route,
+              payload,
+              sourcePayload,
+              taskPath,
+            }));
+          }
+
+          const primaryUpstream = upstreams[0];
+          const fallbackUpstreams = upstreams.slice(1).map((candidate) => ({
+            url: candidate.url,
+            method: candidate.method,
+            headers: candidate.headers,
+            body: candidate.body,
+            upstreamPublicUrl: candidate.upstreamPublicUrl,
+            responseFormat: candidate.responseFormat,
+            imageModel: candidate.imageModel,
+          }));
+
+          const task = await createPersistentImageTask({
+            responseFormat: payload.responseFormat || primaryUpstream.responseFormat,
+            upstreamPublicUrl: primaryUpstream.upstreamPublicUrl,
+            metadata: {
+              ...(payload?.metadata || {}),
+              resolvedImageModel: primaryUpstream.imageModel,
+              imageModelChain: upstreams.map(candidate => candidate.imageModel).filter(Boolean),
+            },
+            target: payload?.target,
+            upstream: {
+              url: primaryUpstream.url,
+              method: primaryUpstream.method,
+              headers: primaryUpstream.headers,
+              body: primaryUpstream.body,
+              fallbackUpstreams,
+            },
+          });
+
+          writeJson(res, 202, { ok: true, task: await taskPublicView(task, false), taskId: task.id });
+          return;
+        }
+
         const upstreamUrl = normalizeUpstreamUrl(upstream.url);
         const authorization = await authorizationForTaskUpstream({
           rawUrl: upstream.url || upstreamUrl,
