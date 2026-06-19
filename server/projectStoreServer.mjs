@@ -748,13 +748,58 @@ const uniqueImageRoutes = (routes) => {
   });
 };
 
+const knownImageFallbackRouteForProvider = (providerId, apiModel) => {
+  const normalized = modelNameOf(apiModel);
+  const base = DEFAULT_NEW_API_IMAGE_MODELS.find(model => modelNameOf(model.apiModel) === normalized);
+  if (!providerId || !base) return null;
+  return imageRouteFromModelConfigModel({
+    id: `image:${base.apiModel}`,
+    name: base.name || base.apiModel,
+    apiModel: base.apiModel,
+    type: 'image',
+    providerId,
+    endpoint: base.endpoint,
+    params: {
+      requestFormat: base.requestFormat,
+      responseFormat: base.responseFormat,
+      defaultAspectRatio: '16:9',
+      supportedAspectRatios: ['16:9', '9:16', '1:1'],
+      size: '1024x1024',
+      aspectRatioSizeMap: {
+        '16:9': '1792x1024',
+        '9:16': '1024x1792',
+        '1:1': '1024x1024',
+      },
+    },
+  });
+};
+
+const withKnownImageFallbackRoutes = (routes) => {
+  const providerIds = Array.from(new Set(routes.map(route => route.providerId).filter(Boolean)));
+  if (providerIds.length === 0) return routes;
+
+  const knownApiModels = ['gpt-image-2', 'gemini-3.1-flash-image'];
+  const additions = [];
+  providerIds.forEach((providerId) => {
+    knownApiModels.forEach((apiModel) => {
+      if (routes.some(route => modelNameOf(route.providerId) === modelNameOf(providerId)
+        && modelNameOf(route.apiModel) === modelNameOf(apiModel))) {
+        return;
+      }
+      const route = knownImageFallbackRouteForProvider(providerId, apiModel);
+      if (route) additions.push(route);
+    });
+  });
+  return uniqueImageRoutes([...routes, ...additions]);
+};
+
 const resolveImageModelRoutes = async (sourceBody, metadata) => {
   const body = parseObjectBody(sourceBody);
   const config = await readModelConfigSafely();
   const configuredRoutes = flattenModelConfigModels(config)
     .map(imageRouteFromModelConfigModel)
     .filter(Boolean);
-  const routePool = [...configuredRoutes, ...configuredImageModels];
+  const routePool = withKnownImageFallbackRoutes([...configuredRoutes, ...configuredImageModels]);
   const activeChainIds = Array.isArray(config?.activeModelChains?.image)
     ? config.activeModelChains.image
     : [];
@@ -783,18 +828,18 @@ const resolveImageModelRoutes = async (sourceBody, metadata) => {
       && activeChainRoutes.some(route => imageRouteMatchesCandidate(route, explicitRoute.id)
         || imageRouteMatchesCandidate(route, explicitRoute.apiModel));
 
-    return uniqueImageRoutes([
+    return uniqueImageRoutes(withKnownImageFallbackRoutes([
       explicitIsInActiveChain ? explicitRoute : null,
       ...activeChainRoutes,
-    ].filter(Boolean));
+    ].filter(Boolean)));
   }
 
-  return uniqueImageRoutes([
+  return uniqueImageRoutes(withKnownImageFallbackRoutes([
     explicitRoute,
     ...configuredRoutes,
     defaultRoute,
     fallbackRoute,
-  ].filter(Boolean));
+  ].filter(Boolean)));
 };
 
 const findImageModelRoute = async (sourceBody, metadata) => {
