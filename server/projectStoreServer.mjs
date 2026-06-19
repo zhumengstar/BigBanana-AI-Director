@@ -156,6 +156,17 @@ const resolveMediaPath = (pathname) => {
   return resolvedPath;
 };
 
+const IMAGE_TASK_PLACEHOLDER_PREFIX = 'bb-image-task://';
+
+const parseImageTaskPlaceholder = (value) => {
+  if (typeof value !== 'string' || !value.startsWith(IMAGE_TASK_PLACEHOLDER_PREFIX)) return '';
+  try {
+    return decodeURIComponent(value.slice(IMAGE_TASK_PLACEHOLDER_PREFIX.length)).trim();
+  } catch {
+    return value.slice(IMAGE_TASK_PLACEHOLDER_PREFIX.length).trim();
+  }
+};
+
 const writeBackup = async (payload) => {
   await mkdir(DATA_DIR, { recursive: true });
   const tmpPath = `${backupPath}.${Date.now()}.tmp`;
@@ -176,6 +187,42 @@ const normalizeBackupImageStates = (payload) => {
 
   visitObjects(payload, (item) => {
     if (!item || typeof item !== 'object' || Array.isArray(item)) return;
+    const placeholderTaskId = parseImageTaskPlaceholder(item.imageUrl);
+    if (placeholderTaskId) {
+      const task = imageTasks.get(placeholderTaskId);
+      item.imageTaskId = item.imageTaskId || placeholderTaskId;
+      item.serverImageTaskId = item.serverImageTaskId || placeholderTaskId;
+
+      if (task?.status === 'completed' && task.imageUrl) {
+        item.status = 'completed';
+        item.imageUrl = task.imageUrl;
+        item.referenceImage = item.referenceImage || task.imageUrl;
+        item.generatedImage = item.generatedImage || task.imageUrl;
+        item.imageTaskResolvedAt = item.imageTaskResolvedAt || Date.now();
+        delete item.error;
+        delete item.failureReason;
+        delete item.lastTransientFailure;
+        changed = true;
+        return;
+      }
+
+      if (task && ['queued', 'running'].includes(task.status)) {
+        item.status = task.status === 'running' ? 'generating_image' : 'queued';
+        item.imageUrl = null;
+        item.imageTaskStatus = task.status;
+        changed = true;
+        return;
+      }
+
+      item.status = 'failed';
+      item.imageUrl = null;
+      item.error = task?.error || `Image task ${placeholderTaskId} was not found.`;
+      item.lastTransientFailure = item.lastTransientFailure || item.error;
+      item.imageTaskResolvedAt = item.imageTaskResolvedAt || Date.now();
+      changed = true;
+      return;
+    }
+
     const status = String(item.status || '').toLowerCase();
     if (!['generating', 'queued', 'generating_image', 'generating_panels'].includes(status)) return;
 
@@ -1224,7 +1271,17 @@ const visitObjects = (root, visitor) => {
   walk(root, []);
 };
 
-const hasImageUrl = (item) => Boolean(item?.imageUrl || item?.referenceImage || item?.generatedImage);
+const isUsableImageUrl = (value) => Boolean(
+  typeof value === 'string'
+  && value.trim()
+  && !parseImageTaskPlaceholder(value)
+);
+
+const hasImageUrl = (item) => Boolean(
+  isUsableImageUrl(item?.imageUrl)
+  || isUsableImageUrl(item?.referenceImage)
+  || isUsableImageUrl(item?.generatedImage)
+);
 
 const imageCandidateScore = (item, task) => {
   if (!item || typeof item !== 'object' || Array.isArray(item)) return 0;
