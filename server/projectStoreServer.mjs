@@ -730,9 +730,19 @@ const resolveImageModelRoutes = async (sourceBody, metadata) => {
     || configuredImageModels[0];
   const fallbackRoute = routePool.find(route => imageRouteMatchesCandidate(route, IMAGE_FALLBACK_MODEL_ID));
 
+  if (activeChainRoutes.length > 0) {
+    const explicitIsInActiveChain = explicitRoute
+      && activeChainRoutes.some(route => imageRouteMatchesCandidate(route, explicitRoute.id)
+        || imageRouteMatchesCandidate(route, explicitRoute.apiModel));
+
+    return uniqueImageRoutes([
+      explicitIsInActiveChain ? explicitRoute : null,
+      ...activeChainRoutes,
+    ].filter(Boolean));
+  }
+
   return uniqueImageRoutes([
     explicitRoute,
-    ...activeChainRoutes,
     ...configuredRoutes,
     defaultRoute,
     fallbackRoute,
@@ -923,7 +933,10 @@ const summarizeProviderErrorResponse = (status, responseText) => {
     const json = JSON.parse(raw);
     const message = json?.error?.message || json?.message || json?.error || json?.detail;
     if (message) {
-      return `Provider request failed with HTTP ${status}: ${String(message).trim()}`;
+      const normalized = typeof message === 'string'
+        ? message
+        : JSON.stringify(message);
+      return `Provider request failed with HTTP ${status}: ${normalized.trim()}`;
     }
   } catch {
     // Non-JSON provider errors are commonly HTML gateway pages. Compact them below.
