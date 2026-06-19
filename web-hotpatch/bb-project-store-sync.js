@@ -501,8 +501,6 @@
     if (!slot || !task || !isActiveImageTask(task)) return false;
     var status = String(slot.status || '').toLowerCase();
     if (
-      status !== 'failed' &&
-      status !== 'pending' &&
       status !== 'queued' &&
       status !== 'generating' &&
       status !== 'generating_image' &&
