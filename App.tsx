@@ -12,7 +12,7 @@ import CharacterLibraryPage from './components/CharacterLibrary';
 import Onboarding, { shouldShowOnboarding, resetOnboarding } from './components/Onboarding';
 import ModelConfigModal from './components/ModelConfig';
 import { ProjectState } from './types';
-import { Save, CheckCircle } from 'lucide-react';
+import { AlertCircle, Save, CheckCircle } from 'lucide-react';
 import { saveEpisode, loadEpisode } from './services/storageService';
 import { setLogCallback, clearLogCallback } from './services/renderLogService';
 import { useAlert } from './components/GlobalAlert';
@@ -51,6 +51,8 @@ const episodeSaveSignature = (episode: ProjectState | null): string => {
   }
 };
 
+type SaveStatus = 'saved' | 'saving' | 'unsaved' | 'error';
+
 function MobileWarning() {
   return (
     <div className="h-screen bg-[var(--bg-base)] flex items-center justify-center p-6">
@@ -81,7 +83,7 @@ function EpisodeWorkspace() {
     syncAllPropsToEpisode,
   } = useProjectContext();
   const [isGenerating, setIsGenerating] = useState(false);
-  const [saveStatus, setSaveStatus] = useState<'saved' | 'saving' | 'unsaved'>('saved');
+  const [saveStatus, setSaveStatus] = useState<SaveStatus>('saved');
   const [showSaveStatus, setShowSaveStatus] = useState(false);
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [showModelConfig, setShowModelConfig] = useState(false);
@@ -173,6 +175,8 @@ function EpisodeWorkspace() {
         setSaveStatus('saved');
       } catch (e) {
         console.error("Auto-save failed", e);
+        setSaveStatus('error');
+        setShowSaveStatus(true);
       }
     }, 1000);
     return () => { if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current); };
@@ -182,9 +186,13 @@ function EpisodeWorkspace() {
     if (saveStatus === 'saved') {
       if (hideStatusTimeoutRef.current) clearTimeout(hideStatusTimeoutRef.current);
       hideStatusTimeoutRef.current = setTimeout(() => setShowSaveStatus(false), 2000);
-    } else if (saveStatus === 'saving') {
+    } else if (saveStatus === 'saving' || saveStatus === 'unsaved') {
       setShowSaveStatus(true);
       if (hideStatusTimeoutRef.current) clearTimeout(hideStatusTimeoutRef.current);
+    } else if (saveStatus === 'error') {
+      setShowSaveStatus(true);
+      if (hideStatusTimeoutRef.current) clearTimeout(hideStatusTimeoutRef.current);
+      hideStatusTimeoutRef.current = setTimeout(() => setShowSaveStatus(false), 5000);
     }
     return () => { if (hideStatusTimeoutRef.current) clearTimeout(hideStatusTimeoutRef.current); };
   }, [saveStatus]);
@@ -319,7 +327,15 @@ function EpisodeWorkspace() {
         {renderStage()}
         {showSaveStatus && (
           <div className="absolute top-4 right-6 pointer-events-none flex items-center gap-2 text-xs font-mono text-[var(--text-tertiary)] bg-[var(--overlay-medium)] px-2 py-1 rounded-full backdrop-blur-sm z-50">
-            {saveStatus === 'saving' ? (<><Save className="w-3 h-3 animate-pulse" />保存中...</>) : (<><CheckCircle className="w-3 h-3 text-[var(--success)]" />已保存</>)}
+            {saveStatus === 'saving' ? (
+              <><Save className="w-3 h-3 animate-pulse" />保存中...</>
+            ) : saveStatus === 'unsaved' ? (
+              <><Save className="w-3 h-3 opacity-70" />待保存...</>
+            ) : saveStatus === 'error' ? (
+              <><AlertCircle className="w-3 h-3 text-[var(--danger)]" />保存失败</>
+            ) : (
+              <><CheckCircle className="w-3 h-3 text-[var(--success)]" />已保存</>
+            )}
           </div>
         )}
       </main>
