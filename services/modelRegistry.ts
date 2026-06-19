@@ -73,6 +73,22 @@ const uniqueStrings = (values: string[]): string[] => {
 
 const modelIdForType = (type: ModelType, apiModel: string): string => `${type}:${apiModel.trim()}`;
 
+const inferStoredApiModel = (model: Partial<ModelDefinition>): string => {
+  const explicit = (model as any).apiModel?.trim?.() || (model as any).model?.trim?.();
+  if (explicit) return explicit;
+  const id = model.id?.trim?.() || '';
+  const type = model.type?.trim?.() as ModelType | undefined;
+  if (type && id.startsWith(`${type}:`)) {
+    return id.slice(type.length + 1).trim();
+  }
+  const separatorIndex = id.indexOf(':');
+  const prefix = separatorIndex > 0 ? id.slice(0, separatorIndex) : '';
+  if ((Object.keys(EMPTY_ACTIVE_MODELS) as string[]).includes(prefix)) {
+    return id.slice(separatorIndex + 1).trim();
+  }
+  return id;
+};
+
 export const inferEndpointForApiModel = (type: ModelType, apiModel: string, fallbackEndpoint?: string): string => {
   if (type !== 'image') {
     return fallbackEndpoint?.trim() || defaultEndpointForType(type);
@@ -122,7 +138,7 @@ const normalizeRegistryState = (value: Partial<ModelRegistryState> | null | unde
   const models = Array.isArray(value?.models)
     ? value.models.filter((model): model is ModelDefinition => Boolean(model && model.id && model.type && model.providerId)).map(model => ({
         ...model,
-        apiModel: model.apiModel || model.id,
+        apiModel: inferStoredApiModel(model),
         isBuiltIn: false,
         isEnabled: model.isEnabled !== false,
       }))
@@ -206,7 +222,7 @@ export const loadRegistry = (): ModelRegistryState => {
         if (m.providerId && m.id.startsWith(`${m.providerId}:`)) {
           return { ...m, apiModel: m.id.slice(m.providerId.length + 1) };
         }
-        return { ...m, apiModel: m.id };
+        return { ...m, apiModel: inferStoredApiModel(m) };
       });
 
       // 清理旧的已废弃视频模型

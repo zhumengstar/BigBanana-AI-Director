@@ -210,12 +210,29 @@ const normalizeModelConfigPayload = (payload) => {
       })).filter((provider) => provider.id && provider.baseUrl)
     : [];
 
+  const modelTypes = new Set(['chat', 'image', 'video', 'audio']);
+  const inferApiModelName = (model) => {
+    const explicit = String(model?.apiModel || model?.model || '').trim();
+    if (explicit) return explicit;
+    const id = String(model?.id || '').trim();
+    const type = String(model?.type || '').trim();
+    const typedPrefix = `${type}:`;
+    if (type && id.startsWith(typedPrefix)) {
+      return id.slice(typedPrefix.length).trim();
+    }
+    const prefixIndex = id.indexOf(':');
+    if (prefixIndex > 0 && modelTypes.has(id.slice(0, prefixIndex))) {
+      return id.slice(prefixIndex + 1).trim();
+    }
+    return id;
+  };
+
   const models = Array.isArray(source.models)
     ? source.models.map((model) => ({
         ...model,
         id: String(model?.id || '').trim(),
-        apiModel: String(model?.apiModel || model?.model || model?.id || '').trim(),
-        name: String(model?.name || model?.apiModel || model?.model || model?.id || '').trim(),
+        apiModel: inferApiModelName(model),
+        name: String(model?.name || inferApiModelName(model) || model?.id || '').trim(),
         type: String(model?.type || '').trim(),
         providerId: String(model?.providerId || '').trim(),
         endpoint: String(model?.endpoint || '').trim(),
