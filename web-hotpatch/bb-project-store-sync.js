@@ -102,15 +102,19 @@
       summary[storeName] = (stores[storeName] || []).map(function (item) {
         var json = '';
         try {
-          json = JSON.stringify(item);
+          json = JSON.stringify(item, function (key, value) {
+            if (key === 'lastModified' || key === 'updatedAt' || key === 'serverPersistedAt') {
+              return undefined;
+            }
+            return value;
+          });
         } catch (error) {
           json = String(item && item.id ? item.id : '');
         }
 
         return {
           id: item && item.id ? String(item.id) : '',
-          updatedAt: item ? (item.updatedAt || item.lastModified || item.createdAt || 0) : 0,
-          size: json.length
+          json: json
         };
       }).sort(function (a, b) {
         return a.id.localeCompare(b.id);
@@ -641,7 +645,6 @@
           endpoint: ENDPOINT,
           items: countPayloadItems(payload)
         };
-        notifyProjectStoreUpdated('server-persisted', payload);
       } else {
         console.warn('[project-store-sync] save failed with status', response.status);
       }

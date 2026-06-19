@@ -28,6 +28,29 @@ const preserveInFlightGenerationStates = (episode: ProjectState): ProjectState =
   scriptGenerationCheckpoint: null,
 });
 
+const episodeSaveSignature = (episode: ProjectState | null): string => {
+  if (!episode) return '';
+  try {
+    return JSON.stringify(episode, (key, value) => {
+      if (
+        key === 'serverPersistedAt' ||
+        key === 'lastModified' ||
+        key === 'updatedAt' ||
+        key === 'imageTasksSyncedAt' ||
+        key === 'imageTasksTerminalSyncedCount' ||
+        key === 'imageTasksStaleClearedCount' ||
+        key === 'imageTasksRecoveredAt' ||
+        key === 'imageTasksRecoveredCount'
+      ) {
+        return undefined;
+      }
+      return value;
+    });
+  } catch (error) {
+    return `${episode.id}:${episode.stage}:${episode.updatedAt || ''}`;
+  }
+};
+
 function MobileWarning() {
   return (
     <div className="h-screen bg-[var(--bg-base)] flex items-center justify-center p-6">
@@ -64,11 +87,26 @@ function EpisodeWorkspace() {
   const [showModelConfig, setShowModelConfig] = useState(false);
   const saveTimeoutRef = useRef<any>(null);
   const hideStatusTimeoutRef = useRef<any>(null);
+  const suppressNextAutoSaveRef = useRef(false);
+  const lastSavedSignatureRef = useRef('');
+  const saveStatusRef = useRef(saveStatus);
+
+  useEffect(() => {
+    saveStatusRef.current = saveStatus;
+  }, [saveStatus]);
 
   useEffect(() => {
     if (!episodeId) return;
-    loadEpisode(episodeId).then(ep => setCurrentEpisode(ep)).catch(() => navigate('/'));
-    return () => setCurrentEpisode(null);
+    loadEpisode(episodeId).then(ep => {
+      suppressNextAutoSaveRef.current = true;
+      lastSavedSignatureRef.current = episodeSaveSignature(ep);
+      setCurrentEpisode(ep);
+    }).catch(() => navigate('/'));
+    return () => {
+      suppressNextAutoSaveRef.current = true;
+      lastSavedSignatureRef.current = '';
+      setCurrentEpisode(null);
+    };
   }, [episodeId]);
 
   useEffect(() => {
@@ -77,8 +115,17 @@ function EpisodeWorkspace() {
     const reloadCurrentEpisode = () => {
       if (reloadTimer) window.clearTimeout(reloadTimer);
       reloadTimer = window.setTimeout(() => {
+        if (saveStatusRef.current !== 'saved' || saveTimeoutRef.current) {
+          return;
+        }
         loadEpisode(episodeId)
-          .then(ep => setCurrentEpisode(ep))
+          .then(ep => {
+            const nextSignature = episodeSaveSignature(ep);
+            if (nextSignature === lastSavedSignatureRef.current) return;
+            suppressNextAutoSaveRef.current = true;
+            lastSavedSignatureRef.current = nextSignature;
+            setCurrentEpisode(ep);
+          })
           .catch(error => console.warn('Reload episode after server task sync failed.', error));
       }, 100);
     };
@@ -106,13 +153,23 @@ function EpisodeWorkspace() {
 
   useEffect(() => {
     if (!currentEpisode) return;
+    const signature = episodeSaveSignature(currentEpisode);
+    if (suppressNextAutoSaveRef.current) {
+      suppressNextAutoSaveRef.current = false;
+      lastSavedSignatureRef.current = signature;
+      return;
+    }
+    if (signature === lastSavedSignatureRef.current) return;
+
     setSaveStatus('unsaved');
     setShowSaveStatus(true);
     if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
     saveTimeoutRef.current = setTimeout(async () => {
+      saveTimeoutRef.current = null;
       setSaveStatus('saving');
       try {
         await saveEpisode(currentEpisode);
+        lastSavedSignatureRef.current = signature;
         setSaveStatus('saved');
       } catch (e) {
         console.error("Auto-save failed", e);
