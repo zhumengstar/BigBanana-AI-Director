@@ -86,11 +86,6 @@ const isValidBackupPayload = (payload) => (
   && typeof payload.stores === 'object'
 );
 
-const readBackup = async () => {
-  const text = await readFile(backupPath, 'utf8');
-  return JSON.parse(text);
-};
-
 const contentTypeFor = (filePath, bytes) => {
   if (bytes && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) return 'image/png';
   if (bytes && bytes[0] === 0xff && bytes[1] === 0xd8) return 'image/jpeg';
@@ -166,6 +161,59 @@ const writeBackup = async (payload) => {
   const tmpPath = `${backupPath}.${Date.now()}.tmp`;
   await writeFile(tmpPath, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
   await rename(tmpPath, backupPath);
+};
+
+const normalizeBackupImageStates = (payload) => {
+  if (!payload || typeof payload !== 'object') return { payload, changed: false };
+
+  let changed = false;
+  const activeTaskIds = new Set(
+    Array.from(imageTasks.values())
+      .filter((task) => task && (task.status === 'queued' || task.status === 'running'))
+      .map((task) => task.id)
+  );
+  const staleMessage = 'stale generating state without active server image task';
+
+  visitObjects(payload, (item) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return;
+    const status = String(item.status || '').toLowerCase();
+    if (!['generating', 'queued', 'generating_image', 'generating_panels'].includes(status)) return;
+
+    const taskId = String(item.serverImageTaskId || item.imageTaskId || item.recoveredImageTaskId || '').trim();
+    if (taskId && activeTaskIds.has(taskId)) return;
+
+    if (hasImageUrl(item)) {
+      item.status = 'completed';
+      item.imageTaskResolvedAt = item.imageTaskResolvedAt || Date.now();
+      delete item.error;
+      delete item.failureReason;
+      delete item.lastTransientFailure;
+    } else {
+      item.status = 'failed';
+      item.imageTaskResolvedAt = item.imageTaskResolvedAt || Date.now();
+      item.error = item.error || staleMessage;
+      item.lastTransientFailure = item.lastTransientFailure || staleMessage;
+      delete item.failureReason;
+    }
+    changed = true;
+  });
+
+  if (changed) {
+    payload.serverPersistedAt = Date.now();
+    payload.imageStateNormalizedAt = Date.now();
+  }
+
+  return { payload, changed };
+};
+
+const readBackup = async ({ persistNormalized = false } = {}) => {
+  const text = await readFile(backupPath, 'utf8');
+  const payload = JSON.parse(text);
+  const normalized = normalizeBackupImageStates(payload);
+  if (persistNormalized && normalized.changed) {
+    await writeBackup(normalized.payload);
+  }
+  return normalized.payload;
 };
 
 const emptyModelConfig = () => ({
@@ -1767,7 +1815,7 @@ export const createProjectStoreHandler = () => async (req, res, next) => {
 
     if (pathname === '/api/project-store/backup' && req.method === 'GET') {
       try {
-        const payload = await readBackup();
+        const payload = await readBackup({ persistNormalized: true });
         writeJson(res, 200, { ok: true, payload });
       } catch (error) {
         if (error && error.code === 'ENOENT') {
@@ -1950,10 +1998,11 @@ export const createProjectStoreHandler = () => async (req, res, next) => {
         return;
       }
 
-      await writeBackup({
+      const normalized = normalizeBackupImageStates({
         ...payload,
         serverPersistedAt: Date.now(),
       });
+      await writeBackup(normalized.payload);
 
       writeJson(res, 200, { ok: true });
       return;
