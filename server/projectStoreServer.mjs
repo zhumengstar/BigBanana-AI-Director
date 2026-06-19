@@ -15,31 +15,6 @@ const CORS_ORIGIN = process.env.PROJECT_STORE_CORS_ORIGIN || '*';
 const IMAGE_TASK_WORKERS = Math.max(1, Number.parseInt(process.env.PROJECT_STORE_IMAGE_TASK_WORKERS || '1', 10));
 const IMAGE_TASK_TIMEOUT_MS = Math.max(1000, Number.parseInt(process.env.PROJECT_STORE_IMAGE_TASK_TIMEOUT_MS || '600000', 10));
 const IMAGE_TASK_TIMEOUT_MESSAGE = 'Image task timed out after 10 minutes.';
-const NEW_API_CHANNEL_ID = process.env.PROJECT_STORE_NEW_API_CHANNEL_ID || 'custom';
-const NEW_API_PROVIDER_ID = `newapi-${NEW_API_CHANNEL_ID}`;
-const DEFAULT_IMAGE_MODEL_ID = process.env.PROJECT_STORE_DEFAULT_IMAGE_MODEL_ID || 'newapi-gpt-image-2';
-
-const DEFAULT_NEW_API_IMAGE_MODELS = [
-  {
-    id: 'newapi-gpt-image-2',
-    name: 'GPT Image 2',
-    apiModel: 'gpt-image-2',
-    requestFormat: 'openai-image',
-    responseFormat: 'openai-image',
-    endpoint: '/v1/images/generations',
-  },
-  {
-    id: 'newapi-gemini-3-1-flash-image',
-    name: 'Gemini 3.1 Flash Image',
-    apiModel: 'gemini-3.1-flash-image',
-    requestFormat: 'openai-chat-image',
-    responseFormat: 'openai-chat-image',
-    endpoint: '/v1/chat/completions',
-  },
-];
-
-const IMAGE_FALLBACK_MODEL_ID = process.env.PROJECT_STORE_IMAGE_FALLBACK_MODEL_ID || 'newapi-gemini-3-1-flash-image';
-
 const backupPath = path.join(DATA_DIR, BACKUP_FILE);
 const imageTasksPath = path.join(DATA_DIR, IMAGE_TASKS_FILE);
 const modelConfigPath = path.join(DATA_DIR, MODEL_CONFIG_FILE);
@@ -684,16 +659,16 @@ const headersForTaskUpstream = async (task, upstream, imageModel) => {
 
 const parseConfiguredImageModels = () => {
   const raw = process.env.PROJECT_STORE_IMAGE_MODELS_JSON;
-  if (!raw || !raw.trim()) return DEFAULT_NEW_API_IMAGE_MODELS;
+  if (!raw || !raw.trim()) return [];
   try {
     const parsed = JSON.parse(raw);
     if (Array.isArray(parsed) && parsed.length) return parsed;
   } catch (error) {
-    console.warn('[project-store] invalid PROJECT_STORE_IMAGE_MODELS_JSON, using defaults', {
+    console.warn('[project-store] invalid PROJECT_STORE_IMAGE_MODELS_JSON, ignoring env image models', {
       error: error instanceof Error ? error.message : String(error),
     });
   }
-  return DEFAULT_NEW_API_IMAGE_MODELS;
+  return [];
 };
 
 const configuredImageModels = parseConfiguredImageModels().map((model) => {
@@ -706,7 +681,7 @@ const configuredImageModels = parseConfiguredImageModels().map((model) => {
     name: String(model.name || apiModel).trim(),
     apiModel,
     type: 'image',
-    providerId: NEW_API_PROVIDER_ID,
+    providerId: String(model.providerId || '').trim(),
     endpoint: String(model.endpoint || (
       requestFormat === 'openai-chat-image' ? '/v1/chat/completions' : '/v1/images/generations'
     )),
@@ -795,58 +770,13 @@ const uniqueImageRoutes = (routes) => {
   });
 };
 
-const knownImageFallbackRouteForProvider = (providerId, apiModel) => {
-  const normalized = modelNameOf(apiModel);
-  const base = DEFAULT_NEW_API_IMAGE_MODELS.find(model => modelNameOf(model.apiModel) === normalized);
-  if (!providerId || !base) return null;
-  return imageRouteFromModelConfigModel({
-    id: `image:${base.apiModel}`,
-    name: base.name || base.apiModel,
-    apiModel: base.apiModel,
-    type: 'image',
-    providerId,
-    endpoint: base.endpoint,
-    params: {
-      requestFormat: base.requestFormat,
-      responseFormat: base.responseFormat,
-      defaultAspectRatio: '16:9',
-      supportedAspectRatios: ['16:9', '9:16', '1:1'],
-      size: '1024x1024',
-      aspectRatioSizeMap: {
-        '16:9': '1792x1024',
-        '9:16': '1024x1792',
-        '1:1': '1024x1024',
-      },
-    },
-  });
-};
-
-const withKnownImageFallbackRoutes = (routes) => {
-  const providerIds = Array.from(new Set(routes.map(route => route.providerId).filter(Boolean)));
-  if (providerIds.length === 0) return routes;
-
-  const knownApiModels = ['gpt-image-2', 'gemini-3.1-flash-image'];
-  const additions = [];
-  providerIds.forEach((providerId) => {
-    knownApiModels.forEach((apiModel) => {
-      if (routes.some(route => modelNameOf(route.providerId) === modelNameOf(providerId)
-        && modelNameOf(route.apiModel) === modelNameOf(apiModel))) {
-        return;
-      }
-      const route = knownImageFallbackRouteForProvider(providerId, apiModel);
-      if (route) additions.push(route);
-    });
-  });
-  return uniqueImageRoutes([...routes, ...additions]);
-};
-
 const resolveImageModelRoutes = async (sourceBody, metadata) => {
   const body = parseObjectBody(sourceBody);
   const config = await readModelConfigSafely();
   const configuredRoutes = flattenModelConfigModels(config)
     .map(imageRouteFromModelConfigModel)
     .filter(Boolean);
-  const routePool = withKnownImageFallbackRoutes([...configuredRoutes, ...configuredImageModels]);
+  const routePool = configuredRoutes;
   const activeChainIds = Array.isArray(config?.activeModelChains?.image)
     ? config.activeModelChains.image
     : [];
@@ -860,38 +790,32 @@ const resolveImageModelRoutes = async (sourceBody, metadata) => {
     metadata?.resolvedImageModel?.apiModel,
     metadata?.resolvedImageModel?.id,
     config?.activeModels?.image,
-    DEFAULT_IMAGE_MODEL_ID,
   ].filter(Boolean);
 
   const explicitRoute = candidates
     .map(candidate => routePool.find(route => imageRouteMatchesCandidate(route, candidate)))
     .find(Boolean);
-  const defaultRoute = routePool.find(route => imageRouteMatchesCandidate(route, DEFAULT_IMAGE_MODEL_ID))
-    || configuredImageModels[0];
-  const fallbackRoute = routePool.find(route => imageRouteMatchesCandidate(route, IMAGE_FALLBACK_MODEL_ID));
 
   if (activeChainRoutes.length > 0) {
     const explicitIsInActiveChain = explicitRoute
       && activeChainRoutes.some(route => imageRouteMatchesCandidate(route, explicitRoute.id)
         || imageRouteMatchesCandidate(route, explicitRoute.apiModel));
 
-    return uniqueImageRoutes(withKnownImageFallbackRoutes([
+    return uniqueImageRoutes([
       explicitIsInActiveChain ? explicitRoute : null,
       ...activeChainRoutes,
-    ].filter(Boolean)));
+    ].filter(Boolean));
   }
 
-  return uniqueImageRoutes(withKnownImageFallbackRoutes([
+  return uniqueImageRoutes([
     explicitRoute,
     ...configuredRoutes,
-    defaultRoute,
-    fallbackRoute,
-  ].filter(Boolean)));
+  ].filter(Boolean));
 };
 
 const findImageModelRoute = async (sourceBody, metadata) => {
   const routes = await resolveImageModelRoutes(sourceBody, metadata);
-  return routes[0] || configuredImageModels[0] || DEFAULT_NEW_API_IMAGE_MODELS[0];
+  return routes[0] || null;
 };
 
 const imageRoutePublicView = (route) => route ? {
@@ -1007,7 +931,7 @@ const buildOpenAiImageBody = (sourceBody, route) => {
 
   return JSON.stringify({
     ...providerPayload,
-    model: route.apiModel || parsed.model || 'gpt-image-2',
+    model: route.apiModel || parsed.model,
     prompt,
     n: Number(parsed.n || route.params?.n || 1) || 1,
     size: parsed.size || sizeForImageAspectRatio(aspectRatio, route),
@@ -2109,31 +2033,10 @@ export const createProjectStoreHandler = () => async (req, res, next) => {
           return;
         }
 
-        const upstreamUrl = normalizeUpstreamUrl(upstream.url);
-        const authorization = await authorizationForTaskUpstream({
-          rawUrl: upstream.url || upstreamUrl,
-          providedAuthorization: upstream.headers?.Authorization || upstream.headers?.authorization,
-          metadata: payload?.metadata,
+        writeJson(res, 400, {
+          ok: false,
+          message: 'No image model configured. Configure at least one image model in Model Configuration.',
         });
-        const headers = {
-          ...(upstream.headers || {}),
-        };
-        delete headers.authorization;
-        if (authorization) headers.Authorization = authorization;
-        const task = await createPersistentImageTask({
-          responseFormat: payload.responseFormat || upstream.responseFormat || null,
-          upstreamPublicUrl: upstream.url,
-          metadata: payload?.metadata,
-          target: payload?.target,
-          upstream: {
-            url: upstreamUrl,
-            method: upstream.method || 'POST',
-            headers,
-            body: typeof upstream.body === 'string' ? upstream.body : JSON.stringify(upstream.body || {}),
-          },
-        });
-
-        writeJson(res, 202, { ok: true, task: await taskPublicView(task, false), taskId: task.id });
       } catch (error) {
         writeJson(res, 400, {
           ok: false,

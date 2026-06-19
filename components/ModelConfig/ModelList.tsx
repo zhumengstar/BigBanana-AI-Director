@@ -446,7 +446,7 @@ const ModelList: React.FC<ModelListProps> = ({ type, onRefresh }) => {
                   saveDraft({ manualModelName: '' });
                 }
               }}
-              placeholder={type === 'image' ? '如 gpt-image-2 或 gemini-3.1-flash-image' : '输入模型名'}
+              placeholder={type === 'image' ? '输入图片模型名' : '输入模型名'}
               className="min-w-0 flex-1 rounded-lg border border-[var(--border-secondary)] bg-[var(--bg-hover)] px-3 py-2.5 font-mono text-xs text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:border-[var(--accent)] focus:outline-none"
             />
             <button

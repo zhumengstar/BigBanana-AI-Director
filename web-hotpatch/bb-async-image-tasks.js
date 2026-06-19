@@ -246,8 +246,12 @@
     var params = activeModel.params || {};
     var prompt = extractPromptFromGeminiBody(bodyText) || originalBody.prompt || '';
     var aspectRatio = resolveImageAspectRatio(originalBody, params);
+    var modelName = activeModel.apiModel || originalBody.model || activeModel.id;
+    if (!modelName) {
+      throw new Error('No image model configured. Configure at least one image model in Model Configuration.');
+    }
     var output = {
-      model: activeModel.apiModel || originalBody.model || activeModel.id || 'gpt-image-2',
+      model: modelName,
       prompt: prompt,
       aspectRatio: aspectRatio,
       referenceImages: extractReferenceImagesFromBody(bodyText),
