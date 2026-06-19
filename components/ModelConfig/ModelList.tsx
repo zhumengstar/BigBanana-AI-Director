@@ -302,7 +302,7 @@ const ModelList: React.FC<ModelListProps> = ({ type, onRefresh }) => {
               setBaseUrl(value);
               saveDraft({ baseUrl: value });
             }}
-            placeholder="https://api.example.com 或 /api/ai-muling"
+            placeholder="https://api.example.com"
             className="w-full rounded-lg border border-[var(--border-secondary)] bg-[var(--bg-hover)] px-3 py-2.5 font-mono text-xs text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:border-[var(--accent)] focus:outline-none"
           />
         </div>

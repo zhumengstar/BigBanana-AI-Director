@@ -152,6 +152,12 @@
     }
   };
 
+  var authorizationFromProvider = function (provider) {
+    var apiKey = String((provider && provider.apiKey) || '').trim();
+    if (!apiKey) return null;
+    return /^Bearer\s+\S+/i.test(apiKey) ? apiKey : 'Bearer ' + apiKey;
+  };
+
   var getImageModelRequestFormat = function (model) {
     var params = (model && model.params) || {};
     if (params.requestFormat) return params.requestFormat;
@@ -175,7 +181,8 @@
 
   var getImageModelPublicUrl = function (model) {
     var provider = getModelProvider(model);
-    var baseUrl = (provider && provider.baseUrl) || '/api/ai-muling';
+    var baseUrl = provider && provider.baseUrl;
+    if (!baseUrl) return null;
     return String(baseUrl).replace(/\/+$/, '') + getImageModelEndpoint(model);
   };
 
@@ -291,6 +298,14 @@
   var createTask = async function (request, bodyText, route) {
     var upstreamBody = route.transformBody ? route.transformBody(bodyText) : bodyText;
     var upstreamPublicUrl = route.upstreamPublicUrl || request.url;
+    var activeModel = getActiveImageModel() || {};
+    var provider = getModelProvider(activeModel);
+    var upstreamHeaders = headersToObject(request.headers);
+    var providerAuthorization = authorizationFromProvider(provider);
+    if (providerAuthorization) {
+      delete upstreamHeaders.authorization;
+      upstreamHeaders.Authorization = providerAuthorization;
+    }
     if (!route.upstreamPublicUrl) {
       try {
         var parsedUpstreamUrl = new URL(request.url, window.location.href);
@@ -308,7 +323,7 @@
         upstream: {
           url: upstreamPublicUrl,
           method: request.method,
-          headers: headersToObject(request.headers),
+          headers: upstreamHeaders,
           body: upstreamBody,
           responseFormat: route.upstreamFormat
         },
@@ -354,6 +369,10 @@
       sourceBody = bodyText;
     }
     if (!payload.metadata) payload.metadata = collectTaskMetadata(sourceBody);
+    var activeModel = getActiveImageModel() || {};
+    var provider = getModelProvider(activeModel);
+    var authorization = authorizationFromProvider(provider);
+    if (authorization) payload.authorization = authorization;
 
     var headers = new Headers(request.headers);
     headers.set('Content-Type', 'application/json');

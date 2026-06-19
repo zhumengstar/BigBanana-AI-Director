@@ -15,12 +15,8 @@ const CORS_ORIGIN = process.env.PROJECT_STORE_CORS_ORIGIN || '*';
 const IMAGE_TASK_WORKERS = Math.max(1, Number.parseInt(process.env.PROJECT_STORE_IMAGE_TASK_WORKERS || '1', 10));
 const IMAGE_TASK_TIMEOUT_MS = Math.max(1000, Number.parseInt(process.env.PROJECT_STORE_IMAGE_TASK_TIMEOUT_MS || '600000', 10));
 const IMAGE_TASK_TIMEOUT_MESSAGE = 'Image task timed out after 10 minutes.';
-const AI_MULING_API_KEY = process.env.AI_MULING_API_KEY || '';
-const NEW_API_CHANNEL_ID = process.env.PROJECT_STORE_NEW_API_CHANNEL_ID || 'ai-muling';
+const NEW_API_CHANNEL_ID = process.env.PROJECT_STORE_NEW_API_CHANNEL_ID || 'custom';
 const NEW_API_PROVIDER_ID = `newapi-${NEW_API_CHANNEL_ID}`;
-const NEW_API_PROVIDER_NAME = process.env.PROJECT_STORE_NEW_API_PROVIDER_NAME || 'New API (ai.muling.store)';
-const NEW_API_PUBLIC_BASE_URL = (process.env.PROJECT_STORE_NEW_API_PUBLIC_BASE_URL || '/api/ai-muling').replace(/\/+$/, '');
-const NEW_API_UPSTREAM_BASE_URL = (process.env.PROJECT_STORE_NEW_API_UPSTREAM_BASE_URL || 'https://ai.muling.store').replace(/\/+$/, '');
 const DEFAULT_IMAGE_MODEL_ID = process.env.PROJECT_STORE_DEFAULT_IMAGE_MODEL_ID || 'newapi-gpt-image-2';
 
 const DEFAULT_NEW_API_IMAGE_MODELS = [
@@ -398,10 +394,6 @@ const normalizeUpstreamUrl = (rawUrl) => {
   const pathname = input.pathname;
   const search = input.search || '';
 
-  if (pathname.startsWith('/api/ai-muling/')) {
-    return `https://ai.muling.store/${pathname.slice('/api/ai-muling/'.length)}${search}`;
-  }
-
   if (pathname.startsWith('/api/new-api')) {
     const baseUrl = process.env.PROJECT_STORE_NEW_API_BASE_URL || 'http://new-api-proxy:8788';
     return `${baseUrl.replace(/\/+$/, '')}${pathname.slice('/api/new-api'.length) || '/'}${search}`;
@@ -414,36 +406,119 @@ const normalizeUpstreamUrl = (rawUrl) => {
   throw new Error('Unsupported upstream URL.');
 };
 
-const authorizationForUpstream = (rawUrl, providedAuthorization) => {
-  const authorization = String(providedAuthorization || '').trim();
-  if (/^Bearer\s+\S+/i.test(authorization)) return authorization;
-
-  try {
-    const input = new URL(String(rawUrl || ''), 'http://local.bigbanana');
-    const isAiMuling = input.hostname === 'ai.muling.store'
-      || input.pathname.startsWith('/api/ai-muling/')
-      || input.pathname.startsWith('/api/new-api/');
-    if (isAiMuling && AI_MULING_API_KEY.trim()) {
-      return `Bearer ${AI_MULING_API_KEY.trim()}`;
-    }
-  } catch {
-    // Missing or malformed upstream URLs are validated by normalizeUpstreamUrl.
-  }
-
-  return authorization || undefined;
+const bearerAuthorization = (value) => {
+  const authorization = String(value || '').trim();
+  if (!authorization) return undefined;
+  return /^Bearer\s+\S+/i.test(authorization) ? authorization : `Bearer ${authorization}`;
 };
 
-const isAiMulingEndpoint = (rawUrl) => {
+const parsedUrlOrNull = (rawUrl) => {
   try {
-    const input = new URL(String(rawUrl || ''), 'http://local.bigbanana');
-    return input.hostname === 'ai.muling.store'
-      || input.pathname === '/api/ai-muling'
-      || input.pathname === '/api/new-api'
-      || input.pathname.startsWith('/api/ai-muling/')
-      || input.pathname.startsWith('/api/new-api/');
+    return new URL(String(rawUrl || ''), 'http://local.bigbanana');
   } catch {
+    return null;
+  }
+};
+
+const urlsShareBase = (rawUrl, rawBaseUrl) => {
+  const input = parsedUrlOrNull(rawUrl);
+  const base = parsedUrlOrNull(rawBaseUrl);
+  if (!input || !base) return false;
+  if ((input.protocol !== 'http:' && input.protocol !== 'https:')
+    || (base.protocol !== 'http:' && base.protocol !== 'https:')) {
     return false;
   }
+  if (input.origin !== base.origin) return false;
+  const basePath = base.pathname.replace(/\/+$/, '');
+  return !basePath
+    || basePath === '/'
+    || input.pathname === basePath
+    || input.pathname.startsWith(`${basePath}/`);
+};
+
+const readModelConfigSafely = async () => {
+  try {
+    return await readModelConfig();
+  } catch (error) {
+    console.warn('[project-store] failed to read model config for image task authorization', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return emptyModelConfig();
+  }
+};
+
+const flattenModelConfigProviders = (config) => Array.isArray(config?.providers) ? config.providers : [];
+
+const flattenModelConfigModels = (config) => Array.isArray(config?.models) ? config.models : [];
+
+const modelNameOf = (value) => String(value || '').trim().toLowerCase();
+
+const findProviderById = (config, providerId) => {
+  const id = String(providerId || '').trim();
+  if (!id) return null;
+  return flattenModelConfigProviders(config).find((provider) => provider.id === id) || null;
+};
+
+const findModelByCandidate = (config, candidates) => {
+  const normalized = new Set(candidates.map(modelNameOf).filter(Boolean));
+  if (!normalized.size) return null;
+  return flattenModelConfigModels(config).find((model) => normalized.has(modelNameOf(model.id))
+    || normalized.has(modelNameOf(model.apiModel))) || null;
+};
+
+const authorizationForTaskUpstream = async ({
+  rawUrl,
+  providedAuthorization,
+  metadata,
+  imageModel,
+}) => {
+  const config = await readModelConfigSafely();
+  const providerCandidates = [
+    metadata?.activeImageModel?.providerId,
+    metadata?.resolvedImageModel?.providerId,
+    metadata?.completedImageModel?.providerId,
+    imageModel?.providerId,
+  ].filter(Boolean);
+
+  for (const providerId of providerCandidates) {
+    const provider = findProviderById(config, providerId);
+    const authorization = bearerAuthorization(provider?.apiKey);
+    if (authorization) return authorization;
+  }
+
+  const configuredModel = findModelByCandidate(config, [
+    metadata?.activeImageModel?.id,
+    metadata?.activeImageModel?.apiModel,
+    metadata?.resolvedImageModel?.id,
+    metadata?.resolvedImageModel?.apiModel,
+    imageModel?.id,
+    imageModel?.apiModel,
+  ]);
+  const modelProviderAuthorization = bearerAuthorization(
+    findProviderById(config, configuredModel?.providerId)?.apiKey,
+  );
+  if (modelProviderAuthorization) return modelProviderAuthorization;
+
+  const providerByUrl = flattenModelConfigProviders(config)
+    .find((provider) => provider?.apiKey && urlsShareBase(rawUrl, provider.baseUrl));
+  const urlAuthorization = bearerAuthorization(providerByUrl?.apiKey);
+  if (urlAuthorization) return urlAuthorization;
+
+  return bearerAuthorization(providedAuthorization);
+};
+
+const headersForTaskUpstream = async (task, upstream, imageModel) => {
+  const headers = sanitizeHeaders(upstream?.headers || {});
+  const providedAuthorization = headers.Authorization || headers.authorization;
+  delete headers.authorization;
+  const authorization = await authorizationForTaskUpstream({
+    rawUrl: upstream?.upstreamPublicUrl || upstream?.url || task?.upstreamPublicUrl,
+    providedAuthorization,
+    metadata: task?.metadata,
+    imageModel,
+  });
+  if (authorization) headers.Authorization = authorization;
+  return headers;
 };
 
 const parseConfiguredImageModels = () => {
@@ -497,8 +572,6 @@ const configuredImageModels = parseConfiguredImageModels().map((model) => {
   };
 }).filter((model) => model.id && model.apiModel);
 
-const modelNameOf = (value) => String(value || '').trim().toLowerCase();
-
 const findImageModelRoute = (sourceBody, metadata) => {
   const body = typeof sourceBody === 'string' ? (() => {
     try {
@@ -523,29 +596,10 @@ const findImageModelRoute = (sourceBody, metadata) => {
   return model || DEFAULT_NEW_API_IMAGE_MODELS[0];
 };
 
-const buildImageModelConfig = () => ({
-  providers: [{
-    id: NEW_API_PROVIDER_ID,
-    name: NEW_API_PROVIDER_NAME,
-    baseUrl: NEW_API_PUBLIC_BASE_URL,
-    upstreamBaseUrl: NEW_API_UPSTREAM_BASE_URL,
-    isBuiltIn: false,
-    isDefault: true,
-    capabilities: ['image', 'chat'],
-  }],
-  models: configuredImageModels,
-  activeModels: {
-    image: configuredImageModels.some((model) => model.id === DEFAULT_IMAGE_MODEL_ID)
-      ? DEFAULT_IMAGE_MODEL_ID
-      : configuredImageModels[0]?.id,
-  },
-});
-
-const publicUrlForImageRoute = (route) => `${NEW_API_PUBLIC_BASE_URL}${route.endpoint || '/v1/images/generations'}`;
-
 const imageRoutePublicView = (route) => route ? {
   id: route.id,
   apiModel: route.apiModel,
+  providerId: route.providerId,
   endpoint: route.endpoint,
   requestFormat: route.requestFormat,
   responseFormat: route.responseFormat,
@@ -699,6 +753,33 @@ const extractImageFromProviderResponse = async (json) => {
   }
 
   throw new Error('Provider response did not contain an image.');
+};
+
+const summarizeProviderErrorResponse = (status, responseText) => {
+  const raw = String(responseText || '').trim();
+  if (!raw) {
+    return `Provider request failed with HTTP ${status}.`;
+  }
+
+  try {
+    const json = JSON.parse(raw);
+    const message = json?.error?.message || json?.message || json?.error || json?.detail;
+    if (message) {
+      return `Provider request failed with HTTP ${status}: ${String(message).trim()}`;
+    }
+  } catch {
+    // Non-JSON provider errors are commonly HTML gateway pages. Compact them below.
+  }
+
+  const titleMatch = raw.match(/<title[^>]*>([^<]+)<\/title>/i);
+  const headingMatch = raw.match(/<h1[^>]*>([^<]+)<\/h1>/i);
+  const htmlSummary = (titleMatch?.[1] || headingMatch?.[1] || '').replace(/\s+/g, ' ').trim();
+  if (htmlSummary) {
+    return `Provider request failed with HTTP ${status}: ${htmlSummary}`;
+  }
+
+  const compact = raw.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+  return `Provider request failed with HTTP ${status}: ${compact.slice(0, 500)}`;
 };
 
 const downloadRemoteImage = async (remoteUrl) => {
@@ -960,15 +1041,20 @@ const runImageTask = async (task) => {
       });
 
       try {
+        const attemptHeaders = await headersForTaskUpstream(
+          task,
+          attemptConfig.upstream,
+          attemptConfig.imageModel,
+        );
         const response = await fetch(attemptConfig.upstream.url, {
           method: attemptConfig.upstream.method || 'POST',
-          headers: attemptConfig.upstream.headers,
+          headers: attemptHeaders,
           body: attemptConfig.upstream.body,
           signal: controller.signal,
         });
         const responseText = await response.text();
         if (!response.ok) {
-          const providerError = new Error(`Provider request failed with HTTP ${response.status}: ${responseText.slice(0, 1000)}`);
+          const providerError = new Error(summarizeProviderErrorResponse(response.status, responseText));
           providerError.status = response.status;
           providerError.responseText = responseText;
           throw providerError;
@@ -1416,22 +1502,23 @@ export const createProjectStoreHandler = () => async (req, res, next) => {
         if (!endpoint) throw new Error('Missing image task endpoint.');
         if (!taskPath.startsWith('/')) throw new Error('Invalid image task path.');
         const sourcePayload = payload?.payload || {};
-        const route = isAiMulingEndpoint(endpoint)
-          ? findImageModelRoute(sourcePayload, payload?.metadata)
-          : null;
-        const upstreamUrl = route ? publicUrlForImageRoute(route) : `${endpoint}${taskPath}`;
-        const authorization = authorizationForUpstream(upstreamUrl, payload?.authorization);
+        const route = findImageModelRoute(sourcePayload, payload?.metadata);
+        const upstreamUrl = `${endpoint}${route?.endpoint || taskPath}`;
+        const authorization = await authorizationForTaskUpstream({
+          rawUrl: upstreamUrl,
+          providedAuthorization: payload?.authorization,
+          metadata: payload?.metadata,
+          imageModel: route,
+        });
         const responseFormat = route?.responseFormat || 'openai-image';
         const fallbackUpstreams = route ? fallbackRoutesForImageRoute(route).map((fallbackRoute) => {
-          const fallbackUrl = publicUrlForImageRoute(fallbackRoute);
-          const fallbackAuthorization = authorizationForUpstream(fallbackUrl, payload?.authorization);
+          const fallbackUrl = `${endpoint}${fallbackRoute.endpoint || taskPath}`;
           return {
             url: normalizeUpstreamUrl(fallbackUrl),
             method: 'POST',
             headers: {
               Accept: '*/*',
               'Content-Type': 'application/json',
-              ...(fallbackAuthorization ? { Authorization: fallbackAuthorization } : {}),
             },
             body: buildImageBodyForRoute(sourcePayload, fallbackRoute),
             upstreamPublicUrl: fallbackUrl,
@@ -1448,6 +1535,7 @@ export const createProjectStoreHandler = () => async (req, res, next) => {
             resolvedImageModel: route ? {
               id: route.id,
               apiModel: route.apiModel,
+              providerId: route.providerId,
               endpoint: route.endpoint,
               requestFormat: route.requestFormat,
               responseFormat: route.responseFormat,
@@ -1545,11 +1633,16 @@ export const createProjectStoreHandler = () => async (req, res, next) => {
       try {
         const upstream = payload?.upstream || {};
         const upstreamUrl = normalizeUpstreamUrl(upstream.url);
-        const authorization = authorizationForUpstream(upstream.url || upstreamUrl, upstream.headers?.Authorization || upstream.headers?.authorization);
+        const authorization = await authorizationForTaskUpstream({
+          rawUrl: upstream.url || upstreamUrl,
+          providedAuthorization: upstream.headers?.Authorization || upstream.headers?.authorization,
+          metadata: payload?.metadata,
+        });
         const headers = {
           ...(upstream.headers || {}),
-          ...(authorization ? { Authorization: authorization } : {}),
         };
+        delete headers.authorization;
+        if (authorization) headers.Authorization = authorization;
         const task = await createPersistentImageTask({
           responseFormat: payload.responseFormat || upstream.responseFormat || null,
           upstreamPublicUrl: upstream.url,
