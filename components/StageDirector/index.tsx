@@ -372,7 +372,7 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
     const negativePrompt = buildShotNegativePrompt(shot, visualStyle);
 
     // 获取道具信息用于提示词注入
-    const propsInfo = getPropsInfoForShot(shot, project.scriptData);
+    const propsInfo = getPropsInfoForShot(shot, project.scriptData, { includeReferenceImageStatus: false });
     
     // 根据开关选择是否使用AI增强
     let prompt: string;
@@ -1426,7 +1426,7 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
     const visualStyle = project.visualStyle || project.scriptData?.visualStyle || 'live-action';
     
     // 1. 构建首帧提示词（保留视角信息，方便后续重新生成）
-    const shotPropsInfo = getPropsInfoForShot(activeShot, project.scriptData);
+    const shotPropsInfo = getPropsInfoForShot(activeShot, project.scriptData, { includeReferenceImageStatus: false });
     const prompt = buildPromptFromNineGridPanel(
       panel,
       activeShot.actionSummary,

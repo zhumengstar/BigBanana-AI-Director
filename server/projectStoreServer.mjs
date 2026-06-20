@@ -163,9 +163,25 @@ const normalizeBackupImageStates = (payload) => {
 
   visitObjects(payload, (item) => {
     if (!item || typeof item !== 'object' || Array.isArray(item)) return;
+
+    const linkedTaskId = String(item.serverImageTaskId || item.imageTaskId || item.recoveredImageTaskId || '').trim();
+    if (
+      linkedTaskId
+      && imageTasks.has(linkedTaskId)
+      && !isEligibleProjectStoreImageTask(imageTasks.get(linkedTaskId))
+      && (item.imageUrl || item.referenceImage || item.generatedImage)
+    ) {
+      if (clearProjectStoreImageState(item)) changed = true;
+      return;
+    }
+
     const placeholderTaskId = parseImageTaskPlaceholder(item.imageUrl);
     if (placeholderTaskId) {
       const task = imageTasks.get(placeholderTaskId);
+      if (task && !isEligibleProjectStoreImageTask(task)) {
+        if (clearProjectStoreImageState(item)) changed = true;
+        return;
+      }
       item.imageTaskId = item.imageTaskId || placeholderTaskId;
       item.serverImageTaskId = item.serverImageTaskId || placeholderTaskId;
 
@@ -1265,6 +1281,69 @@ const completeImageStateFromUrl = (item, imageUrl) => {
   });
 };
 
+const exactProjectStoreImageTargetTypes = new Set([
+  'keyframe',
+  'nineGrid',
+  'character',
+  'character-variation',
+  'scene',
+  'prop',
+]);
+
+const isEligibleProjectStoreImageTask = (task) => {
+  if (!task || task.status !== 'completed' || !task.imageUrl) return false;
+
+  const target = getImageTaskTarget(task);
+  if (!target.type || !exactProjectStoreImageTargetTypes.has(String(target.type))) return false;
+
+  if (target.type === 'keyframe') {
+    return Boolean(target.keyframeId || target.id || target.assetId);
+  }
+
+  if (target.type === 'nineGrid') {
+    return Boolean(target.shotId && (target.id || target.assetId));
+  }
+
+  return Boolean(target.id || target.assetId);
+};
+
+const clearProjectStoreImageState = (item) => {
+  if (!item || typeof item !== 'object' || Array.isArray(item)) return false;
+  const before = JSON.stringify({
+    imageUrl: item.imageUrl,
+    referenceImage: item.referenceImage,
+    generatedImage: item.generatedImage,
+    serverImageTaskId: item.serverImageTaskId,
+    imageTaskId: item.imageTaskId,
+    recoveredImageTaskId: item.recoveredImageTaskId,
+    imageTaskResolvedAt: item.imageTaskResolvedAt,
+    status: item.status,
+  });
+  item.status = 'pending';
+  item.updatedAt = Date.now();
+  delete item.imageUrl;
+  delete item.referenceImage;
+  delete item.generatedImage;
+  delete item.serverImageTaskId;
+  delete item.imageTaskId;
+  delete item.recoveredImageTaskId;
+  delete item.imageTaskResolvedAt;
+  delete item.recoveredImageTaskAt;
+  delete item.error;
+  delete item.failureReason;
+  delete item.lastTransientFailure;
+  return before !== JSON.stringify({
+    imageUrl: item.imageUrl,
+    referenceImage: item.referenceImage,
+    generatedImage: item.generatedImage,
+    serverImageTaskId: item.serverImageTaskId,
+    imageTaskId: item.imageTaskId,
+    recoveredImageTaskId: item.recoveredImageTaskId,
+    imageTaskResolvedAt: item.imageTaskResolvedAt,
+    status: item.status,
+  });
+};
+
 const imageCandidateScore = (item, task) => {
   if (!item || typeof item !== 'object' || Array.isArray(item)) return 0;
   if (item.type && item.resourceId && item.model && item.prompt) return 0;
@@ -1354,6 +1433,11 @@ const isExactImageTaskTarget = (root, item, task, pathParts) => {
 
 const applyImageTaskToProjectStore = async (task) => {
   if (!task || task.status !== 'completed' || !task.imageUrl) return false;
+  if (!isEligibleProjectStoreImageTask(task)) {
+    task.projectStoreAppliedAt = task.projectStoreAppliedAt || Date.now();
+    task.projectStoreApplyError = 'Skipped image task without an exact project-store target.';
+    return false;
+  }
 
   let backup;
   try {

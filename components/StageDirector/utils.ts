@@ -151,60 +151,24 @@ export const routeVideoFrameInputs = (
 };
 
 /**
- * 获取镜头的参考图片
- * 增强版：如果角色有九宫格造型图，将整张九宫格图作为额外参考传入，
- * 并通过 hasTurnaround 标记告知调用方，以便在提示词中正确描述。
+ * 获取镜头的参考图片。
+ *
+ * 镜头生成必须以完整构图提示词为主。角色/场景/道具资产图作为图像输入时，
+ * 通用图片模型容易把输出收敛成单个参考物体，导致镜头卡片错放成道具图。
+ * 资产一致性改由文字提示词约束，首尾帧连续性仍由调用方单独传入。
  */
 export const getRefImagesForShot = (shot: Shot, scriptData: ProjectState['scriptData']): RefImagesResult => {
   const referenceImages: string[] = [];
   let hasTurnaround = false;
   
   if (!scriptData) return { images: referenceImages, hasTurnaround };
-  
-  // 1. 场景参考图（环境/氛围） - 优先级最高
-  const scene = scriptData.scenes.find(s => String(s.id) === String(shot.sceneId));
-  if (scene?.referenceImage) {
-    referenceImages.push(scene.referenceImage);
-  }
 
-  // 2. 角色参考图（外观）
-  if (shot.characters) {
-    shot.characters.forEach(charId => {
+  hasTurnaround = Boolean(
+    shot.characters?.some((charId) => {
       const char = scriptData.characters.find(c => String(c.id) === String(charId));
-      if (!char) return;
-
-      // 检查是否为此镜头选择了特定变体
-      const varId = shot.characterVariations?.[charId];
-      if (varId) {
-        const variation = char.variations?.find(v => v.id === varId);
-        if (variation?.referenceImage) {
-          referenceImages.push(variation.referenceImage);
-          return; // 使用变体图片而不是基础图片
-        }
-      }
-
-      // 基础参考图
-      if (char.referenceImage) {
-        referenceImages.push(char.referenceImage);
-      }
-
-      // 如果角色有已完成的九宫格造型图，追加为额外参考
-      if (char.turnaround?.status === 'completed' && char.turnaround.imageUrl) {
-        referenceImages.push(char.turnaround.imageUrl);
-        hasTurnaround = true;
-      }
-    });
-  }
-
-  // 3. 道具参考图（物品一致性）
-  if (shot.props && scriptData.props) {
-    shot.props.forEach(propId => {
-      const prop = scriptData.props.find(p => String(p.id) === String(propId));
-      if (prop?.referenceImage) {
-        referenceImages.push(prop.referenceImage);
-      }
-    });
-  }
+      return char?.turnaround?.status === 'completed' && !!char.turnaround.imageUrl;
+    })
+  );
   
   return { images: referenceImages, hasTurnaround };
 };
@@ -213,13 +177,23 @@ export const getRefImagesForShot = (shot: Shot, scriptData: ProjectState['script
  * 获取镜头关联的道具信息（用于提示词注入）
  * hasImage 标记该道具是否有参考图，用于提示词中区分"参考图一致性"和"文字描述约束"
  */
-export const getPropsInfoForShot = (shot: Shot, scriptData: ProjectState['scriptData']): { name: string; description: string; hasImage: boolean }[] => {
+export const getPropsInfoForShot = (
+  shot: Shot,
+  scriptData: ProjectState['scriptData'],
+  options: { includeReferenceImageStatus?: boolean } = {}
+): { name: string; description: string; hasImage: boolean }[] => {
   if (!scriptData || !shot.props || !scriptData.props) return [];
+
+  const includeReferenceImageStatus = options.includeReferenceImageStatus !== false;
   
   return shot.props
     .map(propId => scriptData.props.find(p => String(p.id) === String(propId)))
     .filter((p): p is NonNullable<typeof p> => !!p)
-    .map(p => ({ name: p.name, description: p.description || p.visualPrompt || '', hasImage: !!p.referenceImage }));
+    .map(p => ({
+      name: p.name,
+      description: p.description || p.visualPrompt || '',
+      hasImage: includeReferenceImageStatus && !!p.referenceImage,
+    }));
 };
 
 /**
