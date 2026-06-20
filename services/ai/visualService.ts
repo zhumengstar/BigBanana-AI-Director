@@ -746,7 +746,9 @@ export const generateImage = async (
   const startTime = Date.now();
   const continuityReferenceImage = options?.continuityReferenceImage;
   const referencePackType = options?.referencePackType || 'shot';
-  const imageTaskMetadata = options?.target ? { target: options.target } : undefined;
+  const supportsServerImageTasks = typeof window !== 'undefined'
+    && Boolean((window as any).__BIGBANANA_ASYNC_IMAGE_TASKS_INSTALLED__);
+  const imageTaskMetadata = supportsServerImageTasks && options?.target ? { target: options.target } : undefined;
   const hasAnyReference = referenceImages.length > 0 || !!continuityReferenceImage;
 
   const activeImageModel = getActiveModel('image');
