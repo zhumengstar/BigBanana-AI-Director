@@ -264,23 +264,6 @@
     return /Failed to fetch|AbortError|aborted|NetworkError|Load failed|Unexpected end of JSON input/i.test(String(value || ''));
   };
 
-  var hasImageReference = function (value) {
-    if (!value || typeof value !== 'object') return false;
-
-    var imageKeys = ['imageUrl', 'url', 'referenceImage', 'thumbnailUrl', 'previewUrl', 'coverImage', 'shapeReferenceImage'];
-    for (var i = 0; i < imageKeys.length; i += 1) {
-      if (typeof value[imageKeys[i]] === 'string' && value[imageKeys[i]]) return true;
-    }
-
-    if (Array.isArray(value.panels)) {
-      for (var j = 0; j < value.panels.length; j += 1) {
-        if (hasImageReference(value.panels[j])) return true;
-      }
-    }
-
-    return false;
-  };
-
   var firstImageReference = function (value) {
     if (!value || typeof value !== 'object') return '';
     var imageKeys = ['imageUrl', 'referenceImage', 'generatedImage', 'thumbnailUrl', 'previewUrl', 'coverImage', 'shapeReferenceImage', 'url'];
@@ -289,6 +272,19 @@
       if (typeof imageUrl === 'string' && imageUrl && imageUrl.indexOf('bb-image-task://') !== 0) return imageUrl;
     }
     return '';
+  };
+
+  var hasImageReference = function (value) {
+    if (!value || typeof value !== 'object') return false;
+    if (firstImageReference(value)) return true;
+
+    if (Array.isArray(value.panels)) {
+      for (var j = 0; j < value.panels.length; j += 1) {
+        if (hasImageReference(value.panels[j])) return true;
+      }
+    }
+
+    return false;
   };
 
   var normalizeImageReferenceFields = function (value) {
@@ -577,8 +573,8 @@
 
     var status = String(value.status || '').toLowerCase();
     if (status === 'generating' || status === 'queued' || status === 'generating_image' || status === 'generating_panels') {
-      if (hasImageReference(value)) {
-        var imageUrl = value.imageUrl || value.referenceImage || value.generatedImage || value.thumbnailUrl || value.previewUrl || value.coverImage || value.url;
+      var imageUrl = firstImageReference(value);
+      if (imageUrl) {
         value.imageUrl = value.imageUrl || imageUrl;
         value.referenceImage = value.referenceImage || imageUrl;
         value.generatedImage = value.generatedImage || imageUrl;

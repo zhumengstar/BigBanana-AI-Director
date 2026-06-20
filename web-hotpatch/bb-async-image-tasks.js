@@ -608,9 +608,20 @@
     if (!project || hasActiveStoredTask()) return project;
 
     var changed = false;
+    var firstImageReference = function (item) {
+      if (!item || typeof item !== 'object') return '';
+      var imageKeys = ['imageUrl', 'referenceImage', 'generatedImage', 'thumbnailUrl', 'previewUrl', 'coverImage', 'url'];
+      for (var i = 0; i < imageKeys.length; i += 1) {
+        var imageUrl = item[imageKeys[i]];
+        if (typeof imageUrl === 'string' && imageUrl && imageUrl.indexOf('bb-image-task://') !== 0) {
+          return imageUrl;
+        }
+      }
+      return '';
+    };
     var markPending = function (item) {
       if (!item || (item.status !== 'generating' && item.status !== 'queued')) return item;
-      var imageUrl = item.imageUrl || item.referenceImage || item.generatedImage || item.thumbnailUrl || item.previewUrl || item.coverImage || item.url;
+      var imageUrl = firstImageReference(item);
       if (imageUrl) {
         changed = true;
         return Object.assign({}, item, {
