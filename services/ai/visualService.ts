@@ -23,6 +23,17 @@ import {
 } from './promptConstants';
 import { compressPromptWithLLM } from './promptCompressionService';
 
+export interface ImageGenerationTarget {
+  projectId?: string;
+  episodeId?: string;
+  type?: 'character' | 'scene' | 'prop' | 'character-variation' | 'keyframe' | 'nineGrid';
+  id?: string;
+  assetId?: string;
+  shotId?: string;
+  keyframeId?: string;
+  frameType?: string;
+}
+
 // ============================================
 // 美术指导文档生成
 // ============================================
@@ -729,11 +740,13 @@ export const generateImage = async (
   options?: {
     continuityReferenceImage?: string;
     referencePackType?: ReferencePackType;
+    target?: ImageGenerationTarget;
   }
 ): Promise<string> => {
   const startTime = Date.now();
   const continuityReferenceImage = options?.continuityReferenceImage;
   const referencePackType = options?.referencePackType || 'shot';
+  const imageTaskMetadata = options?.target ? { target: options.target } : undefined;
   const hasAnyReference = referenceImages.length > 0 || !!continuityReferenceImage;
 
   const activeImageModel = getActiveModel('image');
@@ -936,7 +949,8 @@ NEGATIVE PROMPT (strictly avoid): ${compactNegativePrompt}`;
       }],
       generationConfig: {
         responseModalities: ["TEXT", "IMAGE"]
-      }
+      },
+      ...(imageTaskMetadata ? { metadata: imageTaskMetadata } : {})
     };
 
     if (aspectRatio !== '16:9') {
@@ -962,8 +976,9 @@ NEGATIVE PROMPT (strictly avoid): ${compactNegativePrompt}`;
         ...(openAiReferenceImages.length > 0 ? { referenceImages: openAiReferenceImages } : {}),
         n: 1,
         size: imageModelParams.aspectRatioSizeMap?.[aspectRatio] || imageModelParams.size || '1024x1024',
-          ...(imageModelParams.quality ? { quality: imageModelParams.quality } : {}),
-          ...(imageModelParams.background ? { background: imageModelParams.background } : {}),
+        ...(imageModelParams.quality ? { quality: imageModelParams.quality } : {}),
+        ...(imageModelParams.background ? { background: imageModelParams.background } : {}),
+        ...(imageTaskMetadata ? { metadata: imageTaskMetadata } : {}),
         }
       : null;
 

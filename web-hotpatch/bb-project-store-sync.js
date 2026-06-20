@@ -349,16 +349,22 @@
     ].filter(Boolean).join(' '));
   };
 
-  var taskMatchesSlot = function (task, slot) {
-    var taskPrompt = normalizeText(task && task.prompt);
-    var slotPrompt = getSlotPrompt(slot);
-    if (!taskPrompt || !slotPrompt) return false;
-    if (taskPrompt.indexOf(slotPrompt) >= 0 || slotPrompt.indexOf(taskPrompt) >= 0) return true;
+  var taskTargetFor = function (task) {
+    var target = task && (task.target || (task.metadata && task.metadata.target));
+    return target && typeof target === 'object' ? target : null;
+  };
 
-    var slotWords = slotPrompt.split(' ').filter(function (word) { return word.length >= 4; });
-    if (slotWords.length === 0) return false;
-    var matched = slotWords.filter(function (word) { return taskPrompt.indexOf(word) >= 0; }).length;
-    return matched >= Math.min(6, Math.ceil(slotWords.length * 0.55));
+  var taskMatchesSlot = function (task, slot) {
+    if (!task || !slot) return false;
+    var slotTaskId = imageTaskIdForSlot(slot);
+    if (slotTaskId && task.id && String(slotTaskId) === String(task.id)) return true;
+
+    var target = taskTargetFor(task);
+    if (!target || !slot.id) return false;
+    var slotId = String(slot.id);
+    return [target.id, target.assetId, target.keyframeId].some(function (value) {
+      return typeof value !== 'undefined' && value !== null && String(value) === slotId;
+    });
   };
 
   var collectUsedImageTaskIds = function (value, used) {
@@ -427,9 +433,6 @@
       var matchedTask = tasks.find(function (task) {
         return !used[task.id] && taskMatchesSlot(task, value);
       });
-      if (!matchedTask && String(value.status || '').toLowerCase() === 'generating') {
-        matchedTask = tasks.find(function (task) { return !used[task.id]; });
-      }
       if (matchedTask && applyTaskImageToSlot(value, matchedTask)) {
         used[matchedTask.id] = true;
         recovered += 1;

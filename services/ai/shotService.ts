@@ -17,7 +17,7 @@ import {
   getActiveChatModel,
 } from './apiCore';
 import { getStylePromptCN, getStylePrompt } from './promptConstants';
-import { generateImage } from './visualService';
+import { generateImage, type ImageGenerationTarget } from './visualService';
 import {
   NINE_GRID_SPLIT_PROMPT,
   NINE_GRID_IMAGE_PROMPT_TEMPLATE,
@@ -781,6 +781,7 @@ export const generateNineGridImage = async (
     hasTurnaround?: boolean;
     panelCount?: StoryboardGridPanelCount;
     promptTemplates?: PromptTemplateConfig;
+    target?: ImageGenerationTarget;
   }
 ): Promise<string> => {
   const startTime = Date.now();
@@ -855,7 +856,7 @@ ${renderPromptTemplate(
       false,
       !!options?.hasTurnaround,
       '',
-      { referencePackType: 'shot' }
+      { referencePackType: 'shot', target: options?.target }
     );
     const duration = Date.now() - startTime;
 

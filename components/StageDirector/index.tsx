@@ -456,6 +456,16 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
     });
 
     try {
+      const imageTarget = {
+        projectId: project.projectId || project.id,
+        episodeId: project.id,
+        type: 'keyframe' as const,
+        id: kfId,
+        assetId: kfId,
+        shotId: shot.id,
+        keyframeId: kfId,
+        frameType: type,
+      };
       // 使用当前设置的横竖屏比例生成关键帧，传递 hasTurnaround 标记
       const url = await generateImage(
         prompt,
@@ -465,8 +475,8 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
         refResult.hasTurnaround,
         negativePrompt,
         continuityReferenceImage
-          ? { continuityReferenceImage, referencePackType: 'shot' }
-          : { referencePackType: 'shot' }
+          ? { continuityReferenceImage, referencePackType: 'shot', target: imageTarget }
+          : { referencePackType: 'shot', target: imageTarget }
       );
       const serverImageTaskId = parseServerImageTaskId(url);
 
@@ -1320,6 +1330,14 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
           hasTurnaround: refResult.hasTurnaround,
           panelCount: layout.panelCount,
           promptTemplates,
+          target: {
+            projectId: project.projectId || project.id,
+            episodeId: project.id,
+            type: 'nineGrid',
+            id: `${shotId}:nineGrid`,
+            assetId: `${shotId}:nineGrid`,
+            shotId,
+          },
         }
       );
       const serverImageTaskId = parseServerImageTaskId(imageUrl);

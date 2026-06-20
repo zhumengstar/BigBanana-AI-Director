@@ -1304,6 +1304,54 @@ const imageCandidateScore = (item, task) => {
   return score;
 };
 
+const getValueAtPath = (root, pathParts) => {
+  let current = root;
+  for (const part of pathParts) {
+    if (current == null) return undefined;
+    current = current[part];
+  }
+  return current;
+};
+
+const getImageTaskTarget = (task) => {
+  const target = task?.target || task?.metadata?.target || null;
+  return target && typeof target === 'object' && !Array.isArray(target) ? target : {};
+};
+
+const stringEquals = (a, b) => (
+  typeof a !== 'undefined'
+  && a !== null
+  && typeof b !== 'undefined'
+  && b !== null
+  && String(a) === String(b)
+);
+
+const isExactImageTaskTarget = (root, item, task, pathParts) => {
+  if (!item || typeof item !== 'object' || Array.isArray(item)) return false;
+  if (item.type && item.resourceId && item.model && item.prompt) return false;
+
+  if (task?.id && (item.serverImageTaskId === task.id || item.imageTaskId === task.id)) {
+    return true;
+  }
+
+  const target = getImageTaskTarget(task);
+  const itemId = item.id;
+  if (itemId && (
+    stringEquals(itemId, target.id)
+    || stringEquals(itemId, target.assetId)
+    || stringEquals(itemId, target.keyframeId)
+  )) {
+    return true;
+  }
+
+  if (target.type === 'nineGrid' && target.shotId && pathParts[pathParts.length - 1] === 'nineGrid') {
+    const parent = getValueAtPath(root, pathParts.slice(0, -1));
+    return Boolean(parent && stringEquals(parent.id, target.shotId));
+  }
+
+  return false;
+};
+
 const applyImageTaskToProjectStore = async (task) => {
   if (!task || task.status !== 'completed' || !task.imageUrl) return false;
 
@@ -1317,16 +1365,17 @@ const applyImageTaskToProjectStore = async (task) => {
 
   let best = null;
   visitObjects(backup, (item, pathParts) => {
-    const score = imageCandidateScore(item, task);
+    if (!isExactImageTaskTarget(backup, item, task, pathParts)) return;
+    const score = Math.max(1000, imageCandidateScore(item, task));
     if (score <= 0) return;
     if (!best || score > best.score) {
       best = { item, pathParts, score };
     }
   });
 
-  if (!best || best.score < 120) {
+  if (!best) {
     task.projectStoreAppliedAt = task.projectStoreAppliedAt || null;
-    task.projectStoreApplyError = 'No matching project-store image asset found.';
+    task.projectStoreApplyError = 'No exact project-store image target found.';
     return false;
   }
 

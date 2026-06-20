@@ -382,8 +382,26 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
         type === 'character' ? characterHasTurnaroundReference : false,
         negativePrompt,
         type === 'character'
-          ? { referencePackType: 'character' }
-          : { referencePackType: 'scene' }
+          ? {
+            referencePackType: 'character',
+            target: {
+              projectId: project.projectId || project.id,
+              episodeId: project.id,
+              type: 'character',
+              id,
+              assetId: id,
+            },
+          }
+          : {
+            referencePackType: 'scene',
+            target: {
+              projectId: project.projectId || project.id,
+              episodeId: project.id,
+              type: 'scene',
+              id,
+              assetId: id,
+            },
+          }
       );
       const serverImageTaskId = parseServerImageTaskId(imageUrl);
 
@@ -1004,7 +1022,16 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
         false,
         false,
         negativePrompt,
-        { referencePackType: 'prop' }
+        {
+          referencePackType: 'prop',
+          target: {
+            projectId: project.projectId || project.id,
+            episodeId: project.id,
+            type: 'prop',
+            id: propId,
+            assetId: propId,
+          },
+        }
       );
       const serverImageTaskId = parseServerImageTaskId(imageUrl);
 
@@ -1245,7 +1272,16 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
         true,
         false,
         negativePrompt,
-        { referencePackType: 'character' }
+        {
+          referencePackType: 'character',
+          target: {
+            projectId: project.projectId || project.id,
+            episodeId: project.id,
+            type: 'character-variation',
+            id: varId,
+            assetId: varId,
+          },
+        }
       );
       const serverImageTaskId = parseServerImageTaskId(imageUrl);
 

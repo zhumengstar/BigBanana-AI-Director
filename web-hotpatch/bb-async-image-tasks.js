@@ -294,14 +294,44 @@
     return apiModel === 'gemini-3.1-flash-image';
   };
 
+  var extractTaskTarget = function (bodyText) {
+    var body = parseJson(bodyText);
+    if (!body || typeof body !== 'object') return null;
+    var target = body.target || (body.metadata && body.metadata.target);
+    return target && typeof target === 'object' && !Array.isArray(target) ? target : null;
+  };
+
+  var stripTaskMetadataFromBody = function (bodyText) {
+    var body = parseJson(bodyText);
+    if (!body || typeof body !== 'object' || Array.isArray(body)) return bodyText;
+    var changed = false;
+    if (body.target) {
+      delete body.target;
+      changed = true;
+    }
+    if (body.metadata && typeof body.metadata === 'object') {
+      if (body.metadata.target) {
+        delete body.metadata.target;
+        changed = true;
+      }
+      if (Object.keys(body.metadata).length === 0) {
+        delete body.metadata;
+        changed = true;
+      }
+    }
+    return changed ? JSON.stringify(body) : bodyText;
+  };
+
   var collectTaskMetadata = function (bodyText) {
     var activeModel = getActiveImageModel() || {};
     var pathMatch = String(window.location.pathname || '').match(/\/project\/([^/]+)(?:\/episode\/([^/]+))?/);
+    var target = extractTaskTarget(bodyText);
     return {
       pageUrl: window.location.href,
       projectId: pathMatch ? decodeURIComponent(pathMatch[1]) : null,
       episodeId: pathMatch && pathMatch[2] ? decodeURIComponent(pathMatch[2]) : null,
       prompt: extractPromptFromGeminiBody(bodyText),
+      target: target,
       activeImageModel: activeModel ? {
         id: activeModel.id || null,
         name: activeModel.name || null,
@@ -372,7 +402,11 @@
   };
 
   var createTask = async function (request, bodyText, route) {
+    var taskTarget = extractTaskTarget(bodyText);
+    var originalMetadata = collectTaskMetadata(bodyText);
     var upstreamBody = route.transformBody ? route.transformBody(bodyText) : bodyText;
+    var upstreamMetadata = collectTaskMetadata(upstreamBody);
+    upstreamBody = stripTaskMetadataFromBody(upstreamBody);
     var upstreamPublicUrl = route.upstreamPublicUrl || request.url;
     var activeModel = getActiveImageModel() || {};
     var provider = getModelProvider(activeModel);
@@ -403,7 +437,10 @@
           body: upstreamBody,
           responseFormat: route.upstreamFormat
         },
-        metadata: collectTaskMetadata(upstreamBody)
+        target: taskTarget || upstreamMetadata.target || null,
+        metadata: Object.assign({}, upstreamMetadata, originalMetadata, {
+          target: taskTarget || originalMetadata.target || upstreamMetadata.target || null
+        })
       })
     });
 
@@ -445,6 +482,10 @@
       sourceBody = bodyText;
     }
     if (!payload.metadata) payload.metadata = collectTaskMetadata(sourceBody);
+    if (!payload.target) payload.target = extractTaskTarget(sourceBody) || payload.metadata.target || null;
+    var strippedSourceBody = stripTaskMetadataFromBody(sourceBody);
+    var strippedPayload = parseJson(strippedSourceBody);
+    if (strippedPayload && typeof strippedPayload === 'object') payload.payload = strippedPayload;
     var activeModel = getActiveImageModel() || {};
     var provider = getModelProvider(activeModel);
     var authorization = authorizationFromProvider(provider);
