@@ -1247,11 +1247,21 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
         negativePrompt,
         { referencePackType: 'character' }
       );
+      const serverImageTaskId = parseServerImageTaskId(imageUrl);
 
       const newData = cloneScriptData(project.scriptData!);
       const c = newData.characters.find(c => compareIds(c.id, charId));
       const v = c?.variations?.find(v => compareIds(v.id, varId));
       if (v) {
+        if (serverImageTaskId) {
+          v.status = 'generating';
+          v.serverImageTaskId = serverImageTaskId;
+          v.imageTaskId = serverImageTaskId;
+          delete v.error;
+          delete v.failureReason;
+          updateProject({ scriptData: newData });
+          return;
+        }
         v.referenceImage = imageUrl;
         v.status = 'completed';
         delete v.error;
@@ -1395,13 +1405,21 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
         char.referenceImage,
         project.scriptData?.artDirection
       );
+      const serverImageTaskId = parseServerImageTaskId(imageUrl);
 
-      // 更新状态为 completed
       updateProject((prev) => {
         if (!prev.scriptData) return prev;
         const newData = cloneScriptData(prev.scriptData);
         const c = newData.characters.find(c => compareIds(c.id, charId));
         if (c && c.turnaround) {
+          if (serverImageTaskId) {
+            c.turnaround.status = 'generating_image';
+            c.turnaround.serverImageTaskId = serverImageTaskId;
+            c.turnaround.imageTaskId = serverImageTaskId;
+            delete c.turnaround.error;
+            delete c.turnaround.failureReason;
+            return { ...prev, scriptData: newData };
+          }
           c.turnaround.imageUrl = imageUrl;
           c.turnaround.status = 'completed';
         }
