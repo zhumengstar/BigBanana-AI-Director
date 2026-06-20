@@ -18,6 +18,7 @@ services:
       - ./web-hotpatch/assets/icons-B1NknkI4.js:/usr/share/nginx/html/assets/icons-B1NknkI4.js:ro
       - ./web-hotpatch/assets/icons-Cl1wufkh.js:/usr/share/nginx/html/assets/icons-Cl1wufkh.js:ro
       - ./web-hotpatch/assets/index-YggY4CaN.css:/usr/share/nginx/html/assets/index-YggY4CaN.css:ro
+      - ./web-hotpatch/assets/index-DW_Bbkc4.js:/usr/share/nginx/html/assets/index-DW_Bbkc4.js:ro
       - ./web-hotpatch/assets/index-CaZpkOBK.js:/usr/share/nginx/html/assets/index-CaZpkOBK.js:ro
       - ./web-hotpatch/assets/index-Qx4qkpUb.js:/usr/share/nginx/html/assets/index-Qx4qkpUb.js:ro
       - ./web-hotpatch/assets/index-BtZboLsm.js:/usr/share/nginx/html/assets/index-BtZboLsm.js:ro
